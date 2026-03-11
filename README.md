@@ -42,7 +42,7 @@ Git Commit ──> Dispatcher ──> Overseer Agent
               └─────────────────────────┘
 ```
 
-**Flow:** Note marked as task → git commit → dispatcher detects change → overseer decomposes into sub-tasks → agents execute concurrently → results written back to vault.
+**Flow:** Write a note → git commit → dispatcher detects change → overseer analyzes and decomposes into sub-tasks → agents execute concurrently → results written back to vault.
 
 ## Quick Start
 
@@ -60,14 +60,17 @@ Git Commit ──> Dispatcher ──> Overseer Agent
 git clone https://github.com/andreiRadu1303/DavyJones.git
 cd DavyJones
 
-# 2. Install plugin into your vault and configure
+# 2. Generate a long-lived Claude token
+claude setup-token
+
+# 3. Install plugin into your vault and configure
 ./davyjones setup /path/to/your/vault
 
-# 3. Add your Claude token
+# 4. Add your Claude token
 #    Either: edit the .davyjones.env in your vault root
 #    Or: open Obsidian → Settings → DavyJones → paste token → Apply Changes
 
-# 4. Start the services
+# 5. Start the services
 ./davyjones start
 ```
 
@@ -75,18 +78,15 @@ A terminal window opens with live logs. Your vault is now connected.
 
 ### First Task
 
-Create a note in Obsidian with this content:
+Create a note in Obsidian and write what you want done:
 
 ```markdown
----
-type: task
-status: pending
----
-
 Say hello! Write a greeting message in this file.
 ```
 
-Commit the file (click the git status indicator in Obsidian's status bar, or commit manually). The dispatcher picks it up within seconds.
+Commit the file (click the git status indicator in Obsidian's status bar, or commit manually). The dispatcher detects the change, the overseer analyzes it, and an agent executes the work — all within seconds.
+
+No special frontmatter is required. The overseer reads the commit diff and decides what work to do. You can optionally use `type: task` or `type: job` in frontmatter for more structured workflows.
 
 ## CLI Reference
 
