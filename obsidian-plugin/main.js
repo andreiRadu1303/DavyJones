@@ -880,12 +880,15 @@ class DavyJonesControlPanel extends ItemView {
     this._rules = this.plugin._readVaultRules();
     this._dirty = false;
 
+    // Scroll wrapper (header + body scroll together, apply bar stays pinned)
+    const scroll = el.createDiv({ cls: "davyjones-cp-scroll" });
+
     // ── Header ──
-    const header = el.createDiv({ cls: "davyjones-cp-header" });
+    const header = scroll.createDiv({ cls: "davyjones-cp-header" });
     header.createEl("h2", { text: "DavyJones Control Panel" });
     header.createEl("p", { cls: "davyjones-cp-subtitle", text: "Configure agent behavior, MCP services, and vault rules." });
 
-    const body = el.createDiv({ cls: "davyjones-cp-body" });
+    const body = scroll.createDiv({ cls: "davyjones-cp-body" });
 
     // ── MCP Services ──
     const mcpSection = body.createDiv({ cls: "davyjones-cp-section" });

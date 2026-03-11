@@ -393,9 +393,18 @@
 
 .davyjones-cp-root {
   padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.davyjones-cp-scroll {
+  flex: 1;
   overflow-y: auto;
   max-width: 800px;
   margin: 0 auto;
+  width: 100%;
 }
 
 .davyjones-cp-header {
@@ -416,7 +425,7 @@
 }
 
 .davyjones-cp-body {
-  padding: 16px 32px 80px;
+  padding: 16px 32px 24px;
 }
 
 .davyjones-cp-section {
@@ -561,15 +570,18 @@
   display: none;
 }
 
-/* Apply bar (sticky footer) */
+/* Apply bar (pinned footer) */
 .davyjones-cp-apply-bar {
-  position: sticky;
-  bottom: 0;
+  flex-shrink: 0;
   background: var(--background-primary);
   border-top: 1px solid var(--background-modifier-border);
   padding: 12px 32px;
   display: flex;
   justify-content: flex-end;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .davyjones-cp-apply-btn {
