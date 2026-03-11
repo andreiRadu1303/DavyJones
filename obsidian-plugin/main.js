@@ -20,6 +20,7 @@ function fuzzyMatch(query, target) {
 const TYPE_OPTIONS = ["note", "task", "job"];
 const HEARTBEAT_MAX_AGE_S = 30;
 const HISTORY_VIEW_TYPE = "davyjones-history";
+const CONTROL_VIEW_TYPE = "davyjones-control";
 const HISTORY_PAGE_SIZE = 20;
 
 class DavyJonesPlugin extends Plugin {
@@ -44,6 +45,11 @@ class DavyJonesPlugin extends Plugin {
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new DavyJonesHistoryView(leaf, this));
     this.addRibbonIcon("git-branch", "DavyJones: Vault History", () => this._activateHistoryView());
     this.addCommand({ id: "toggle-history", name: "Toggle vault history panel", callback: () => this._activateHistoryView() });
+
+    // Control panel
+    this.registerView(CONTROL_VIEW_TYPE, (leaf) => new DavyJonesControlPanel(leaf, this));
+    this.addRibbonIcon("sliders-horizontal", "DavyJones: Control Panel", () => this._activateControlPanel());
+    this.addCommand({ id: "open-control-panel", name: "Open control panel", callback: () => this._activateControlPanel() });
 
     // Status bar: connection indicator
     this._statusBarEl = this.addStatusBarItem();
@@ -90,6 +96,7 @@ class DavyJonesPlugin extends Plugin {
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(CONTROL_VIEW_TYPE);
   }
 
   async _activateHistoryView() {
@@ -100,6 +107,17 @@ class DavyJonesPlugin extends Plugin {
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({ type: HISTORY_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  async _activateControlPanel() {
+    const existing = this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({ type: CONTROL_VIEW_TYPE, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -836,6 +854,210 @@ class DavyJonesHistoryView extends ItemView {
   }
 }
 
+// ─── Control Panel (center view) ──────────────────────────────
+
+class DavyJonesControlPanel extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._config = {};
+    this._rules = {};
+    this._dirty = false;
+  }
+
+  getViewType() { return CONTROL_VIEW_TYPE; }
+  getDisplayText() { return "DavyJones Control Panel"; }
+  getIcon() { return "sliders-horizontal"; }
+
+  async onOpen() { this._render(); }
+  async onClose() { this.contentEl.empty(); }
+
+  _render() {
+    const el = this.contentEl;
+    el.empty();
+    el.addClass("davyjones-cp-root");
+    this._config = this.plugin._readDavyJonesEnv();
+    this._rules = this.plugin._readVaultRules();
+    this._dirty = false;
+
+    // ── Header ──
+    const header = el.createDiv({ cls: "davyjones-cp-header" });
+    header.createEl("h2", { text: "DavyJones Control Panel" });
+    header.createEl("p", { cls: "davyjones-cp-subtitle", text: "Configure agent behavior, MCP services, and vault rules." });
+
+    const body = el.createDiv({ cls: "davyjones-cp-body" });
+
+    // ── MCP Services ──
+    const mcpSection = body.createDiv({ cls: "davyjones-cp-section" });
+    mcpSection.createEl("h3", { text: "MCP Services" });
+    mcpSection.createEl("p", { cls: "davyjones-cp-desc", text: "Toggle which integrations agents can use. Tokens are configured in Settings > DavyJones." });
+
+    const mcpGrid = mcpSection.createDiv({ cls: "davyjones-cp-mcp-grid" });
+
+    for (const service of CP_SERVICE_DEFS) {
+      const enabledKey = `${service.id.toUpperCase()}_MCP_ENABLED`;
+      const hasToken = !!this._config[service.tokenKey];
+      const isEnabled = this._config[enabledKey] !== "false";
+
+      const card = mcpGrid.createDiv({ cls: "davyjones-cp-mcp-card" });
+      const cardTop = card.createDiv({ cls: "davyjones-cp-mcp-card-top" });
+      const dot = cardTop.createEl("span", { cls: "davyjones-dot" });
+      dot.addClass(hasToken && isEnabled ? "davyjones-dot-on" : "davyjones-dot-off");
+      cardTop.createEl("span", { cls: "davyjones-cp-mcp-name", text: service.name });
+
+      const statusText = !hasToken ? "no token" : isEnabled ? "active" : "paused";
+      cardTop.createEl("span", {
+        cls: `davyjones-cp-mcp-status ${!hasToken ? "is-notoken" : isEnabled ? "is-active" : "is-paused"}`,
+        text: statusText,
+      });
+
+      const cardBody = card.createDiv({ cls: "davyjones-cp-mcp-card-body" });
+      cardBody.createEl("p", { cls: "davyjones-cp-mcp-desc", text: service.desc });
+
+      if (hasToken) {
+        new Setting(cardBody)
+          .setName("Active")
+          .addToggle((toggle) => {
+            toggle.setValue(isEnabled).onChange((value) => {
+              this._config[enabledKey] = value ? "true" : "false";
+              this._dirty = true;
+              dot.removeClass("davyjones-dot-on", "davyjones-dot-off");
+              dot.addClass(value ? "davyjones-dot-on" : "davyjones-dot-off");
+              const st = card.querySelector(".davyjones-cp-mcp-status");
+              if (st) {
+                st.setText(value ? "active" : "paused");
+                st.className = `davyjones-cp-mcp-status ${value ? "is-active" : "is-paused"}`;
+              }
+            });
+          });
+      } else {
+        cardBody.createEl("p", { cls: "davyjones-cp-mcp-hint", text: `Add a ${service.name} token in Settings > DavyJones to enable.` });
+      }
+    }
+
+    // ── Agent Behavior ──
+    const agentSection = body.createDiv({ cls: "davyjones-cp-section" });
+    agentSection.createEl("h3", { text: "Agent Behavior" });
+
+    new Setting(agentSection)
+      .setName("Custom Instructions")
+      .setDesc("Injected into every overseer and agent prompt (e.g., language, coding style, constraints).")
+      .addTextArea((text) => {
+        text.setPlaceholder('e.g., "Always respond in Romanian", "Prefer Python over JS"')
+          .setValue(this._rules.customInstructions || "")
+          .onChange((value) => { this._rules.customInstructions = value; this._dirty = true; });
+        text.inputEl.rows = 5;
+        text.inputEl.style.width = "100%";
+      });
+
+    new Setting(agentSection)
+      .setName("Response Verbosity")
+      .setDesc("Controls how detailed agent output is.")
+      .addDropdown((drop) => {
+        drop.addOption("concise", "Concise")
+          .addOption("normal", "Normal")
+          .addOption("detailed", "Detailed")
+          .setValue(this._rules.verbosity || "normal")
+          .onChange((value) => { this._rules.verbosity = value; this._dirty = true; });
+      });
+
+    const tuningRow = agentSection.createDiv({ cls: "davyjones-cp-row" });
+
+    const turnsBox = tuningRow.createDiv({ cls: "davyjones-cp-inline-setting" });
+    new Setting(turnsBox)
+      .setName("Max Turns")
+      .setDesc("Per-agent turn budget")
+      .addText((text) => {
+        text.setPlaceholder("20")
+          .setValue(String(this._rules.maxTurns || 20))
+          .onChange((value) => { this._rules.maxTurns = parseInt(value, 10) || 20; this._dirty = true; });
+        text.inputEl.type = "number";
+        text.inputEl.style.width = "70px";
+      });
+
+    const timeoutBox = tuningRow.createDiv({ cls: "davyjones-cp-inline-setting" });
+    new Setting(timeoutBox)
+      .setName("Timeout (sec)")
+      .setDesc("Max time per agent")
+      .addText((text) => {
+        text.setPlaceholder("300")
+          .setValue(String(this._rules.timeout || 300))
+          .onChange((value) => { this._rules.timeout = parseInt(value, 10) || 300; this._dirty = true; });
+        text.inputEl.type = "number";
+        text.inputEl.style.width = "70px";
+      });
+
+    new Setting(agentSection)
+      .setName("Auto-commit")
+      .setDesc("Automatically commit vault changes made by agents.")
+      .addToggle((toggle) => {
+        toggle.setValue(this._rules.autoCommit === true)
+          .onChange((value) => { this._rules.autoCommit = value; this._dirty = true; });
+      });
+
+    // ── Ignore Patterns ──
+    const ignoreSection = body.createDiv({ cls: "davyjones-cp-section" });
+    ignoreSection.createEl("h3", { text: "Ignore Patterns" });
+
+    new Setting(ignoreSection)
+      .setName("Files to Skip")
+      .setDesc("Glob patterns the overseer ignores, one per line.")
+      .addTextArea((text) => {
+        text.setPlaceholder("_templates/*\ndaily/*\n.obsidian/*")
+          .setValue((this._rules.ignorePatterns || []).join("\n"))
+          .onChange((value) => {
+            this._rules.ignorePatterns = value.split("\n").map(s => s.trim()).filter(Boolean);
+            this._dirty = true;
+          });
+        text.inputEl.rows = 4;
+        text.inputEl.style.width = "100%";
+      });
+
+    // ── Allowed Operations ──
+    const opsSection = body.createDiv({ cls: "davyjones-cp-section" });
+    opsSection.createEl("h3", { text: "Allowed Operations" });
+    opsSection.createEl("p", { cls: "davyjones-cp-desc", text: "Restrict what agents can do in this vault." });
+
+    const ops = this._rules.allowedOperations || {};
+    const opsGrid = opsSection.createDiv({ cls: "davyjones-cp-ops-grid" });
+    for (const [key, label, icon] of [
+      ["createFiles", "Create Files", "file-plus"],
+      ["deleteFiles", "Delete Files", "file-minus"],
+      ["modifyFiles", "Modify Files", "file-edit"],
+      ["runGitCommands", "Git Commands", "git-branch"],
+    ]) {
+      const opCard = opsGrid.createDiv({ cls: `davyjones-cp-op-card ${ops[key] !== false ? "is-allowed" : "is-denied"}` });
+      opCard.createEl("span", { cls: "davyjones-cp-op-label", text: label });
+      new Setting(opCard).addToggle((toggle) => {
+        toggle.setValue(ops[key] !== false).onChange((value) => {
+          if (!this._rules.allowedOperations) this._rules.allowedOperations = {};
+          this._rules.allowedOperations[key] = value;
+          this._dirty = true;
+          opCard.classList.toggle("is-allowed", value);
+          opCard.classList.toggle("is-denied", !value);
+        });
+      });
+    }
+
+    // ── Apply bar ──
+    const applyBar = el.createDiv({ cls: "davyjones-cp-apply-bar" });
+    const applyBtn = applyBar.createEl("button", { cls: "davyjones-cp-apply-btn", text: "Apply & Restart" });
+    applyBtn.addEventListener("click", () => {
+      this.plugin._writeDavyJonesEnv(this._config);
+      this.plugin._writeVaultRules(this._rules);
+      this.plugin._applyServiceConfig();
+      this._dirty = false;
+      new Notice("Configuration saved. Restarting services...");
+    });
+  }
+}
+
+const CP_SERVICE_DEFS = [
+  { id: "github", name: "GitHub", tokenKey: "GITHUB_TOKEN", desc: "Repos, issues, PRs, actions, code search." },
+  { id: "gitlab", name: "GitLab", tokenKey: "GITLAB_TOKEN", desc: "Repos, issues, MRs, files, branches." },
+  { id: "slack", name: "Slack", tokenKey: "SLACK_BOT_TOKEN", desc: "Channels, messages, reactions, users, search." },
+];
+
 // ─── Settings Tab ─────────────────────────────────────────────
 
 const SERVICE_DEFS = [
@@ -1048,132 +1270,31 @@ class DavyJonesSettingTab extends PluginSettingTab {
         }
       }
 
-      // MCP active toggle
-      const enabledKey = `${service.id.toUpperCase()}_MCP_ENABLED`;
-      const isEnabled = this._config[enabledKey] !== "false";
-      new Setting(containerEl)
-        .setName("Active")
-        .setDesc("When off, the token is saved but the MCP service won't start.")
-        .addToggle((toggle) => {
-          toggle.setValue(isEnabled).onChange((value) => {
-            this._config[enabledKey] = value ? "true" : "false";
-            this._dirty = true;
-          });
-        });
-    }
-
-    // ── Vault Rules & Customization ──
-    containerEl.createEl("h3", { text: "Vault Rules & Customization", cls: "davyjones-section-heading" });
-    containerEl.createEl("p", {
-      cls: "setting-item-description davyjones-settings-desc",
-      text: "Configure how agents behave in this vault. These settings are injected into every agent prompt.",
-    });
-
-    const rules = this.plugin._readVaultRules();
-
-    new Setting(containerEl)
-      .setName("Custom Instructions")
-      .setDesc("Injected into every overseer and agent prompt (e.g., language, coding style, constraints).")
-      .addTextArea((text) => {
-        text.setPlaceholder('e.g., "Always respond in Romanian", "Prefer Python over JS"')
-          .setValue(rules.customInstructions || "")
-          .onChange((value) => { rules.customInstructions = value; this._dirty = true; });
-        text.inputEl.rows = 5;
-        text.inputEl.style.width = "100%";
-      });
-
-    new Setting(containerEl)
-      .setName("Response Verbosity")
-      .setDesc("Controls how detailed agent output is.")
-      .addDropdown((drop) => {
-        drop.addOption("concise", "Concise")
-          .addOption("normal", "Normal")
-          .addOption("detailed", "Detailed")
-          .setValue(rules.verbosity || "normal")
-          .onChange((value) => { rules.verbosity = value; this._dirty = true; });
-      });
-
-    new Setting(containerEl)
-      .setName("Default Max Turns")
-      .setDesc("Maximum conversation turns per agent (default: 20).")
-      .addText((text) => {
-        text.setPlaceholder("20")
-          .setValue(String(rules.maxTurns || 20))
-          .onChange((value) => { rules.maxTurns = parseInt(value, 10) || 20; this._dirty = true; });
-        text.inputEl.type = "number";
-        text.inputEl.style.width = "80px";
-      });
-
-    new Setting(containerEl)
-      .setName("Agent Timeout (seconds)")
-      .setDesc("Maximum time for a single agent run (default: 300).")
-      .addText((text) => {
-        text.setPlaceholder("300")
-          .setValue(String(rules.timeout || 300))
-          .onChange((value) => { rules.timeout = parseInt(value, 10) || 300; this._dirty = true; });
-        text.inputEl.type = "number";
-        text.inputEl.style.width = "80px";
-      });
-
-    new Setting(containerEl)
-      .setName("Auto-commit")
-      .setDesc("Automatically commit vault changes made by agents.")
-      .addToggle((toggle) => {
-        toggle.setValue(rules.autoCommit === true)
-          .onChange((value) => { rules.autoCommit = value; this._dirty = true; });
-      });
-
-    new Setting(containerEl)
-      .setName("Ignore Patterns")
-      .setDesc("Glob patterns the overseer skips, one per line (e.g., _templates/*, daily/*).")
-      .addTextArea((text) => {
-        text.setPlaceholder("_templates/*\ndaily/*\n.obsidian/*")
-          .setValue((rules.ignorePatterns || []).join("\n"))
-          .onChange((value) => {
-            rules.ignorePatterns = value.split("\n").map(s => s.trim()).filter(Boolean);
-            this._dirty = true;
-          });
-        text.inputEl.rows = 4;
-        text.inputEl.style.width = "100%";
-      });
-
-    // Allowed operations
-    containerEl.createEl("h4", { text: "Allowed Operations", cls: "davyjones-subsection-heading" });
-    const ops = rules.allowedOperations || {};
-    for (const [key, label, desc] of [
-      ["createFiles", "Create files", "Allow agents to create new notes and files"],
-      ["deleteFiles", "Delete files", "Allow agents to delete existing files"],
-      ["modifyFiles", "Modify existing files", "Allow agents to edit existing notes"],
-      ["runGitCommands", "Run git commands", "Allow agents to execute git operations"],
-    ]) {
-      new Setting(containerEl)
-        .setName(label)
-        .setDesc(desc)
-        .addToggle((toggle) => {
-          toggle.setValue(ops[key] !== false)
-            .onChange((value) => {
-              if (!rules.allowedOperations) rules.allowedOperations = {};
-              rules.allowedOperations[key] = value;
-              this._dirty = true;
-            });
-        });
     }
 
     // ── Apply button ──
     const applyContainer = containerEl.createDiv({ cls: "davyjones-apply-container" });
     new Setting(applyContainer)
       .setName("")
-      .setDesc("Saves settings and restarts the dispatcher.")
+      .setDesc("Saves tokens and restarts services. Use the Control Panel for agent behavior settings.")
       .addButton((btn) => {
         btn
-          .setButtonText("Apply Changes")
+          .setButtonText("Save & Restart")
           .setCta()
           .onClick(() => {
             this.plugin._writeDavyJonesEnv(this._config);
-            this.plugin._writeVaultRules(rules);
             this.plugin._applyServiceConfig();
             this._dirty = false;
           });
+      });
+
+    new Setting(applyContainer)
+      .setName("")
+      .setDesc("")
+      .addButton((btn) => {
+        btn
+          .setButtonText("Open Control Panel")
+          .onClick(() => this.plugin._activateControlPanel());
       });
   }
 }

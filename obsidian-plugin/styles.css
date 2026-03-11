@@ -389,6 +389,204 @@
   color: var(--text-normal);
 }
 
+/* ─── Control Panel (center view) ─────────────────────────── */
+
+.davyjones-cp-root {
+  padding: 0;
+  overflow-y: auto;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.davyjones-cp-header {
+  padding: 24px 32px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.davyjones-cp-header h2 {
+  margin: 0 0 4px 0;
+  font-size: 22px;
+  color: var(--text-normal);
+}
+
+.davyjones-cp-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.davyjones-cp-body {
+  padding: 16px 32px 80px;
+}
+
+.davyjones-cp-section {
+  margin-bottom: 28px;
+}
+
+.davyjones-cp-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.davyjones-cp-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0 12px 0;
+}
+
+/* MCP service cards */
+.davyjones-cp-mcp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.davyjones-cp-mcp-card {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.davyjones-cp-mcp-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.davyjones-cp-mcp-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-normal);
+}
+
+.davyjones-cp-mcp-status {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.davyjones-cp-mcp-status.is-active {
+  background: rgba(75, 195, 115, 0.15);
+  color: rgb(70, 180, 105);
+}
+
+.davyjones-cp-mcp-status.is-paused {
+  background: rgba(255, 185, 50, 0.15);
+  color: rgb(225, 170, 50);
+}
+
+.davyjones-cp-mcp-status.is-notoken {
+  background: var(--background-primary);
+  color: var(--text-faint);
+}
+
+.davyjones-cp-mcp-card-body {
+  font-size: 12px;
+}
+
+.davyjones-cp-mcp-card-body .setting-item {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.davyjones-cp-mcp-desc {
+  margin: 0 0 6px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.davyjones-cp-mcp-hint {
+  margin: 4px 0 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Inline settings row */
+.davyjones-cp-row {
+  display: flex;
+  gap: 16px;
+}
+
+.davyjones-cp-inline-setting {
+  flex: 1;
+}
+
+/* Operations grid */
+.davyjones-cp-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.davyjones-cp-op-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  transition: border-color 0.15s;
+}
+
+.davyjones-cp-op-card.is-allowed {
+  border-color: rgba(70, 180, 105, 0.3);
+}
+
+.davyjones-cp-op-card.is-denied {
+  border-color: rgba(225, 80, 80, 0.3);
+}
+
+.davyjones-cp-op-label {
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.davyjones-cp-op-card .setting-item {
+  border-top: none;
+  padding: 0;
+}
+
+.davyjones-cp-op-card .setting-item-info {
+  display: none;
+}
+
+/* Apply bar (sticky footer) */
+.davyjones-cp-apply-bar {
+  position: sticky;
+  bottom: 0;
+  background: var(--background-primary);
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 12px 32px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.davyjones-cp-apply-btn {
+  padding: 6px 24px;
+  border-radius: 6px;
+  border: none;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.davyjones-cp-apply-btn:hover {
+  filter: brightness(1.1);
+}
+
 /* ─── Settings tab ────────────────────────────────────────── */
 
 .davyjones-settings-desc {
