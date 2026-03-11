@@ -156,7 +156,16 @@ class DavyJonesPlugin extends Plugin {
     const shell = process.env.SHELL || "/bin/bash";
     const mergeScript = path.join(this._projectRoot, "scripts", "_merge_env.sh");
     const rootEnv = path.join(this._projectRoot, ".env");
-    const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose restart dispatcher 2>&1'`;
+
+    // Build profile flags for services that have tokens configured
+    const config = this._readDavyJonesEnv();
+    const profiles = [];
+    if (config.SLACK_BOT_TOKEN) profiles.push("--profile slack");
+    if (config.GITLAB_TOKEN) profiles.push("--profile gitlab");
+    if (config.GITHUB_TOKEN) profiles.push("--profile github");
+    const profileFlags = profiles.join(" ");
+
+    const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose ${profileFlags} up -d 2>&1'`;
 
     exec(cmd, { timeout: 60000, cwd: this._projectRoot }, (err, stdout, stderr) => {
       if (err) {
@@ -385,7 +394,7 @@ class DavyJonesPlugin extends Plugin {
 
     const shell = process.env.SHELL || "/bin/bash";
     const fixScript = path.join(this._projectRoot, "scripts", "fix_credentials.sh");
-    const cmd = `${shell} -l -c 'bash "${fixScript}" && cd "${this._projectRoot}" && docker compose restart dispatcher'`;
+    const cmd = `${shell} -l -c 'bash "${fixScript}" && cd "${this._projectRoot}" && docker compose up -d dispatcher'`;
 
     // Longer timeout: claude login waits for browser OAuth callback
     exec(cmd, { timeout: 300000, cwd: this._projectRoot }, (err, stdout, stderr) => {

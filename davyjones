@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_SRC="$PROJECT_ROOT/obsidian-plugin"
+ENV_FILE="$PROJECT_ROOT/.env"
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+# Vault-specific keys that get cleared/merged on switch
+_VAULT_KEYS=(CLAUDE_CODE_OAUTH_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN GITLAB_TOKEN GITLAB_MCP_URL GITHUB_TOKEN GITHUB_REPO GITHUB_POLL_INTERVAL)
+
+merge_vault_env() {
+    local vault_dir="$1"
+    local env_file="$2"
+    local vault_env="$vault_dir/.davyjones.env"
+
+    for key in "${_VAULT_KEYS[@]}"; do
+        if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+            _sed_inplace "s|^${key}=.*|${key}=|" "$env_file"
+        fi
+    done
+
+    if [ -f "$vault_env" ]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// /}" ]] && continue
+            local key="${line%%=*}"
+            local value="${line#*=}"
+            key="$(echo "$key" | xargs)"
+            [ -z "$key" ] && continue
+            if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+                _sed_inplace "s|^${key}=.*|${key}=${value}|" "$env_file"
+            else
+                echo "${key}=${value}" >> "$env_file"
+            fi
+        done < "$vault_env"
+        echo "  Loaded vault tokens from .davyjones.env"
+    fi
+}
+
+# Cross-platform sed -i
+_sed_inplace() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
+# Open a command in a new terminal window (cross-platform)
+open_in_terminal() {
+    local cmd="$1"
+    local title="${2:-DavyJones}"
+
+    case "$(uname -s)" in
+        Darwin)
+            osascript <<APPLE
+tell application "Terminal"
+    activate
+    do script "cd '${PROJECT_ROOT}' && ${cmd}"
+end tell
+APPLE
+            echo "  Opened Terminal window."
+            ;;
+        Linux)
+            local term=""
+            for t in gnome-terminal konsole xfce4-terminal x-terminal-emulator xterm; do
+                command -v "$t" &>/dev/null && term="$t" && break
+            done
+            if [ -z "$term" ]; then
+                echo "  No terminal emulator found — running in current terminal."
+                eval "$cmd"
+                return
+            fi
+            case "$term" in
+                gnome-terminal)
+                    "$term" --title="$title" -- bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" &
+                    ;;
+                konsole)
+                    "$term" -e bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" &
+                    ;;
+                *)
+                    "$term" -e "bash -c 'cd \"${PROJECT_ROOT}\" && ${cmd}; exec bash'" &
+                    ;;
+            esac
+            echo "  Opened $term window."
+            ;;
+        *)
+            echo "  Unknown OS — running in current terminal."
+            eval "$cmd"
+            ;;
+    esac
+}
+
+extract_credentials() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "  Skipping Keychain extraction (not macOS)."
+        echo "  Set CLAUDE_CODE_OAUTH_TOKEN in your .env or vault's .davyjones.env."
+        return 0
+    fi
+
+    local creds_file="$PROJECT_ROOT/.claude-credentials.json"
+
+    local keychain_data=""
+    local current_user
+    current_user=$(whoami)
+    if keychain_data=$(security find-generic-password -s "Claude Code-credentials" -a "$current_user" -w 2>/dev/null); then
+        true
+    elif keychain_data=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null); then
+        true
+    else
+        echo "  WARNING: No Claude credentials in Keychain."
+        echo "  Run 'claude login' first, or set CLAUDE_CODE_OAUTH_TOKEN in .env."
+        return 0
+    fi
+
+    # Validate
+    if ! echo "$keychain_data" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+oauth = data.get('claudeAiOauth', {})
+if not oauth.get('accessToken'):
+    sys.exit(1)
+" 2>/dev/null; then
+        echo "  WARNING: Keychain credentials invalid."
+        return 0
+    fi
+
+    echo "$keychain_data" > "$creds_file"
+    chmod 600 "$creds_file"
+    echo "  Credentials extracted from Keychain."
+}
+
+# ── Commands ──────────────────────────────────────────────────────
+
+cmd_setup() {
+    local vault_abs=""
+
+    # Resolve vault path
+    if [ -n "${1:-}" ]; then
+        if [[ "$1" == /* ]]; then
+            vault_abs="$1"
+        else
+            vault_abs="$(cd "$PROJECT_ROOT" && cd "$1" 2>/dev/null && pwd)" || \
+            vault_abs="$PROJECT_ROOT/$1"
+        fi
+    else
+        # Auto-detect from Obsidian's vault registry
+        local obsidian_config=""
+        case "$(uname -s)" in
+            Darwin)  obsidian_config="$HOME/Library/Application Support/obsidian/obsidian.json" ;;
+            Linux)   obsidian_config="$HOME/.config/obsidian/obsidian.json" ;;
+            MINGW*|MSYS*|CYGWIN*) obsidian_config="$APPDATA/obsidian/obsidian.json" ;;
+        esac
+
+        local vaults=()
+        if [ -n "$obsidian_config" ] && [ -f "$obsidian_config" ]; then
+            while IFS= read -r vpath; do
+                [ -d "$vpath" ] && vaults+=("$vpath")
+            done < <(python3 -c "
+import json, os
+with open(os.path.expanduser('$obsidian_config')) as f:
+    data = json.load(f)
+for v in data.get('vaults', {}).values():
+    print(v['path'])
+" 2>/dev/null)
+        fi
+
+        if [ ${#vaults[@]} -eq 0 ]; then
+            echo "No Obsidian vaults found."
+            echo "Usage: ./davyjones setup <path-to-vault>"
+            exit 1
+        elif [ ${#vaults[@]} -eq 1 ]; then
+            vault_abs="${vaults[0]}"
+            echo "Auto-detected vault: $vault_abs"
+        else
+            echo "Obsidian vaults:"
+            for i in "${!vaults[@]}"; do
+                echo "  $((i+1)). ${vaults[$i]}"
+            done
+            read -rp "Select [1-${#vaults[@]}]: " choice
+            vault_abs="${vaults[$((choice-1))]}"
+        fi
+    fi
+
+    if [ ! -d "$vault_abs" ]; then
+        echo "Error: $vault_abs does not exist"
+        exit 1
+    fi
+
+    echo "=== DavyJones Setup ==="
+    echo "Vault: $vault_abs"
+    echo ""
+
+    # 1. Install plugin (symlink)
+    mkdir -p "$vault_abs/.obsidian/plugins"
+    local plugin_dest="$vault_abs/.obsidian/plugins/davyjones"
+
+    if [ -L "$plugin_dest" ]; then
+        echo "  Plugin already symlinked."
+    elif [ -d "$plugin_dest" ]; then
+        echo "  Replacing plugin copy with symlink..."
+        rm -rf "$plugin_dest"
+        ln -s "$PLUGIN_SRC" "$plugin_dest"
+    else
+        echo "  Installing plugin (symlink)..."
+        ln -s "$PLUGIN_SRC" "$plugin_dest"
+    fi
+
+    # 2. Enable in community-plugins.json
+    local community_plugins="$vault_abs/.obsidian/community-plugins.json"
+    if [ -f "$community_plugins" ]; then
+        if ! python3 -c "import json; d=json.load(open('$community_plugins')); exit(0 if 'davyjones' in d else 1)" 2>/dev/null; then
+            python3 -c "
+import json
+with open('$community_plugins') as f:
+    d = json.load(f)
+d.append('davyjones')
+with open('$community_plugins', 'w') as f:
+    json.dump(d, f, indent=2)
+"
+            echo "  Enabled in community-plugins.json"
+        fi
+    else
+        echo '["davyjones"]' > "$community_plugins"
+        echo "  Created community-plugins.json"
+    fi
+
+    # 3. Plugin config
+    echo "{\"projectRoot\": \"$PROJECT_ROOT\"}" > "$vault_abs/.obsidian/davyjones-config.json"
+    echo "  Plugin configured."
+
+    # 4. Create/update .env
+    if [ -f "$ENV_FILE" ]; then
+        if grep -q "^VAULT_DIR=" "$ENV_FILE"; then
+            _sed_inplace "s|^VAULT_DIR=.*|VAULT_DIR=$vault_abs|" "$ENV_FILE"
+        else
+            echo "VAULT_DIR=$vault_abs" >> "$ENV_FILE"
+        fi
+    else
+        cp "$PROJECT_ROOT/.env.example" "$ENV_FILE" 2>/dev/null || true
+        echo "VAULT_DIR=$vault_abs" >> "$ENV_FILE"
+    fi
+    echo "  .env configured (VAULT_DIR=$vault_abs)"
+
+    # 5. Create vault .davyjones.env
+    local vault_env="$vault_abs/.davyjones.env"
+    if [ ! -f "$vault_env" ]; then
+        cat > "$vault_env" << 'ENVEOF'
+# DavyJones vault configuration
+# Edit via Obsidian Settings > DavyJones, or manually here.
+
+# Claude authentication (long-lived token from 'claude setup-token')
+CLAUDE_CODE_OAUTH_TOKEN=
+
+# GitHub — Settings > Developer settings > Personal access tokens
+GITHUB_TOKEN=
+# GITHUB_REPO=owner/repo
+
+# GitLab — Settings > Access Tokens
+GITLAB_TOKEN=
+# GITLAB_MCP_URL=
+
+# Slack — api.slack.com/apps
+SLACK_BOT_TOKEN=
+SLACK_APP_TOKEN=
+ENVEOF
+        echo "  Created .davyjones.env in vault"
+    fi
+
+    # 6. Merge vault env
+    merge_vault_env "$vault_abs" "$ENV_FILE"
+
+    # 7. Git init
+    if [ -f "$vault_abs/.gitignore" ]; then
+        grep -q "^\.davyjones$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones" >> "$vault_abs/.gitignore"
+        grep -q "^\.davyjones\.env$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones.env" >> "$vault_abs/.gitignore"
+    fi
+
+    if [ ! -d "$vault_abs/.git" ]; then
+        echo ""
+        echo "  Initializing git in vault..."
+        (
+            cd "$vault_abs"
+            git init
+            cat >> .gitignore << 'EOF'
+.obsidian/workspace.json
+.davyjones
+.davyjones.env
+EOF
+            git add -A
+            git commit -m "Initial vault commit"
+        )
+    fi
+
+    # 8. Extract credentials
+    echo ""
+    extract_credentials
+
+    echo ""
+    echo "=== Setup complete ==="
+    echo ""
+    echo "Next: ./davyjones start"
+}
+
+cmd_start() {
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "No .env found. Run './davyjones setup' first."
+        exit 1
+    fi
+
+    echo "=== DavyJones Start ==="
+
+    # Extract credentials
+    extract_credentials
+
+    # Merge vault env
+    local vault_dir
+    vault_dir=$(grep "^VAULT_DIR=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    if [ -n "$vault_dir" ]; then
+        merge_vault_env "$vault_dir" "$ENV_FILE"
+    fi
+
+    echo ""
+
+    # Detect which optional profiles to enable based on configured tokens
+    local profiles="--profile build-only"
+    grep -q "^SLACK_BOT_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile slack"
+    grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile gitlab"
+    grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile github"
+
+    # Build agent image first (it uses build-only profile, not started as a service)
+    echo "Building agent image..."
+    cd "$PROJECT_ROOT"
+    docker compose $profiles build agent
+
+    if [ "${1:-}" = "--here" ]; then
+        echo "Building and starting..."
+        docker compose $profiles up --build
+    else
+        echo "Opening terminal with DavyJones services..."
+        open_in_terminal "docker compose $profiles up --build"
+        echo ""
+        echo "Stop with: ./davyjones stop"
+    fi
+}
+
+cmd_stop() {
+    echo "Stopping DavyJones..."
+    cd "$PROJECT_ROOT"
+    docker compose --profile slack --profile gitlab --profile github down
+    echo "Stopped."
+}
+
+cmd_logs() {
+    cd "$PROJECT_ROOT"
+    docker compose logs -f
+}
+
+cmd_clean() {
+    echo "Stopping and removing all DavyJones containers, images, and volumes..."
+    cd "$PROJECT_ROOT"
+    docker compose --profile build-only down --rmi all --volumes --remove-orphans
+    echo "Clean."
+}
+
+# ── Main ──────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    setup)
+        shift
+        cmd_setup "$@"
+        ;;
+    start)
+        shift
+        cmd_start "$@"
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    logs)
+        cmd_logs
+        ;;
+    clean)
+        cmd_clean
+        ;;
+    *)
+        echo "DavyJones — AI agent for Obsidian"
+        echo ""
+        echo "Usage: ./davyjones <command>"
+        echo ""
+        echo "Commands:"
+        echo "  setup [vault-path]   Install plugin and configure vault"
+        echo "  start [--here]       Build and start services (opens new terminal)"
+        echo "  stop                 Stop all services"
+        echo "  clean                Stop and remove all containers, images, and volumes"
+        echo "  logs                 Tail live service logs"
+        ;;
+esac
