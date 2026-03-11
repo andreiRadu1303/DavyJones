@@ -165,9 +165,9 @@ class DavyJonesPlugin extends Plugin {
     if (config.GITHUB_TOKEN) profiles.push("--profile github");
     const profileFlags = profiles.join(" ");
 
-    const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose ${profileFlags} up -d 2>&1'`;
+    const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose --profile build-only ${profileFlags} build && docker compose ${profileFlags} up -d 2>&1'`;
 
-    exec(cmd, { timeout: 60000, cwd: this._projectRoot }, (err, stdout, stderr) => {
+    exec(cmd, { timeout: 180000, cwd: this._projectRoot }, (err, stdout, stderr) => {
       if (err) {
         new Notice("Apply failed: " + (stderr?.split("\n").pop() || err.message));
         return;

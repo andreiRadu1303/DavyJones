@@ -361,7 +361,9 @@ cmd_logs() {
 cmd_clean() {
     echo "Stopping and removing all DavyJones containers, images, and volumes..."
     cd "$PROJECT_ROOT"
-    docker compose --profile build-only down --rmi all --volumes --remove-orphans
+    docker compose --profile build-only --profile slack --profile gitlab --profile github down --rmi all --volumes --remove-orphans
+    # Remove external images that docker compose doesn't clean up
+    docker images --format "{{.Repository}}:{{.Tag}}" | grep -i "gitlab-mcp\|github-mcp" | xargs -r docker rmi 2>/dev/null || true
     echo "Clean."
 }
 
