@@ -17,7 +17,7 @@ class CommitData:
     diff_text: str  # unified diff of .md file changes
 
 
-def build(commit_data: CommitData) -> str:
+def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
     """Build the full prompt for the overseer container."""
     parts = [
         "You are the DavyJones overseer agent. Your job is to analyze a git commit",
@@ -99,6 +99,56 @@ def build(commit_data: CommitData) -> str:
         "- Wiki-links like [[path/to/file]] are cross-references the agent can follow",
         "",
     ]
+
+    # Vault-specific rules
+    if vault_rules:
+        custom = vault_rules.get("customInstructions", "")
+        if custom:
+            parts.extend([
+                "## Custom Instructions (from vault owner)",
+                "",
+                custom,
+                "",
+            ])
+
+        ignore_patterns = vault_rules.get("ignorePatterns", [])
+        if ignore_patterns:
+            parts.extend([
+                "## File Ignore Patterns",
+                "",
+                "Skip these files/patterns — do not create tasks for them:",
+                "",
+            ])
+            for pattern in ignore_patterns:
+                parts.append(f"- `{pattern}`")
+            parts.append("")
+
+        ops = vault_rules.get("allowedOperations", {})
+        restrictions = []
+        if not ops.get("createFiles", True):
+            restrictions.append("Do NOT create new files")
+        if not ops.get("deleteFiles", True):
+            restrictions.append("Do NOT delete files")
+        if not ops.get("modifyFiles", True):
+            restrictions.append("Do NOT modify existing files (read-only)")
+        if not ops.get("runGitCommands", True):
+            restrictions.append("Do NOT run git commands")
+        if restrictions:
+            parts.extend([
+                "## Operation Restrictions",
+                "",
+                "The vault owner has restricted the following operations:",
+                "",
+            ])
+            for r in restrictions:
+                parts.append(f"- {r}")
+            parts.append("")
+
+        verbosity = vault_rules.get("verbosity", "normal")
+        if verbosity == "concise":
+            parts.extend(["When setting task prompts, instruct agents to be concise and minimal.", ""])
+        elif verbosity == "detailed":
+            parts.extend(["When setting task prompts, instruct agents to be thorough and detailed.", ""])
 
     # Changed files summary
     parts.extend([

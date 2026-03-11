@@ -21,6 +21,11 @@ MAX_CONCURRENT_AGENTS = int(os.environ.get("MAX_CONCURRENT_AGENTS", "3"))
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 GITHUB_POLL_INTERVAL = int(os.environ.get("GITHUB_POLL_INTERVAL", "60"))
 
+# MCP service toggles
+SLACK_MCP_ENABLED = os.environ.get("SLACK_MCP_ENABLED", "true").lower() != "false"
+GITHUB_MCP_ENABLED = os.environ.get("GITHUB_MCP_ENABLED", "true").lower() != "false"
+GITLAB_MCP_ENABLED = os.environ.get("GITLAB_MCP_ENABLED", "true").lower() != "false"
+
 # Docker container spawning
 VAULT_HOST_PATH = os.environ.get("VAULT_HOST_PATH", "")
 CREDS_HOST_PATH = os.environ.get("CREDS_HOST_PATH", "")

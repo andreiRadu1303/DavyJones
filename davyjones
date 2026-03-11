@@ -8,7 +8,7 @@ ENV_FILE="$PROJECT_ROOT/.env"
 # ── Helpers ───────────────────────────────────────────────────────
 
 # Vault-specific keys that get cleared/merged on switch
-_VAULT_KEYS=(CLAUDE_CODE_OAUTH_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN GITLAB_TOKEN GITLAB_MCP_URL GITHUB_TOKEN GITHUB_REPO GITHUB_POLL_INTERVAL)
+_VAULT_KEYS=(CLAUDE_CODE_OAUTH_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN GITLAB_TOKEN GITLAB_MCP_URL GITHUB_TOKEN GITHUB_REPO GITHUB_POLL_INTERVAL SLACK_MCP_ENABLED GITHUB_MCP_ENABLED GITLAB_MCP_ENABLED)
 
 merge_vault_env() {
     local vault_dir="$1"
@@ -276,6 +276,7 @@ ENVEOF
     if [ -f "$vault_abs/.gitignore" ]; then
         grep -q "^\.davyjones$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones" >> "$vault_abs/.gitignore"
         grep -q "^\.davyjones\.env$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones.env" >> "$vault_abs/.gitignore"
+        grep -q "^\.davyjones-rules\.json$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones-rules.json" >> "$vault_abs/.gitignore"
     fi
 
     if [ ! -d "$vault_abs/.git" ]; then
@@ -288,6 +289,7 @@ ENVEOF
 .obsidian/workspace.json
 .davyjones
 .davyjones.env
+.davyjones-rules.json
 EOF
             git add -A
             git commit -m "Initial vault commit"
@@ -324,11 +326,20 @@ cmd_start() {
 
     echo ""
 
-    # Detect which optional profiles to enable based on configured tokens
+    # Detect which optional profiles to enable based on configured tokens + MCP enabled flags
     local profiles="--profile build-only"
-    grep -q "^SLACK_BOT_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile slack"
-    grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile gitlab"
-    grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && profiles="$profiles --profile github"
+
+    _is_mcp_enabled() {
+        local key="$1"
+        local val
+        val=$(grep "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+        # Default is true — only skip if explicitly "false"
+        [ "$val" != "false" ]
+    }
+
+    grep -q "^SLACK_BOT_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "SLACK_MCP_ENABLED" && profiles="$profiles --profile slack"
+    grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "GITLAB_MCP_ENABLED" && profiles="$profiles --profile gitlab"
+    grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "GITHUB_MCP_ENABLED" && profiles="$profiles --profile github"
 
     # Build agent image first (it uses build-only profile, not started as a service)
     echo "Building agent image..."

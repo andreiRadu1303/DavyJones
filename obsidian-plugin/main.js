@@ -1,4 +1,4 @@
-const { Plugin, Notice, MarkdownView, PluginSettingTab, Setting } = require("obsidian");
+const { Plugin, Notice, MarkdownView, PluginSettingTab, Setting, ItemView } = require("obsidian");
 const fs = require("fs");
 const path = require("path");
 const { exec, execSync } = require("child_process");
@@ -19,6 +19,8 @@ function fuzzyMatch(query, target) {
 
 const TYPE_OPTIONS = ["note", "task", "job"];
 const HEARTBEAT_MAX_AGE_S = 30;
+const HISTORY_VIEW_TYPE = "davyjones-history";
+const HISTORY_PAGE_SIZE = 20;
 
 class DavyJonesPlugin extends Plugin {
   async onload() {
@@ -37,6 +39,11 @@ class DavyJonesPlugin extends Plugin {
 
     // Switch vault command
     this.addCommand({ id: "switch-vault", name: "Switch active vault to this one", callback: () => this.switchToThisVault() });
+
+    // History panel
+    this.registerView(HISTORY_VIEW_TYPE, (leaf) => new DavyJonesHistoryView(leaf, this));
+    this.addRibbonIcon("git-branch", "DavyJones: Vault History", () => this._activateHistoryView());
+    this.addCommand({ id: "toggle-history", name: "Toggle vault history panel", callback: () => this._activateHistoryView() });
 
     // Status bar: connection indicator
     this._statusBarEl = this.addStatusBarItem();
@@ -73,11 +80,27 @@ class DavyJonesPlugin extends Plugin {
     this.registerInterval(window.setInterval(() => {
       this._updateStatusBar();
       this._updateGitStatus();
+      // Refresh history panel if open
+      for (const leaf of this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)) {
+        if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+      }
     }, 15000));
   }
 
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
+    this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
+  }
+
+  async _activateHistoryView() {
+    const existing = this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({ type: HISTORY_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
   }
 
   // ─── Config ──────────────────────────────────────────────────
@@ -124,9 +147,9 @@ class DavyJonesPlugin extends Plugin {
 
     const sections = [
       { header: "# Claude Auth", keys: ["CLAUDE_CODE_OAUTH_TOKEN"] },
-      { header: "# GitHub", keys: ["GITHUB_TOKEN", "GITHUB_REPO"] },
-      { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_MCP_URL"] },
-      { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] },
+      { header: "# GitHub", keys: ["GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_MCP_ENABLED"] },
+      { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_MCP_URL", "GITLAB_MCP_ENABLED"] },
+      { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_MCP_ENABLED"] },
     ];
 
     for (const section of sections) {
@@ -145,6 +168,28 @@ class DavyJonesPlugin extends Plugin {
     fs.writeFileSync(envPath, lines.join("\n"), "utf8");
   }
 
+  _readVaultRules() {
+    const rulesPath = path.join(this._vaultPath, ".davyjones-rules.json");
+    try {
+      return JSON.parse(fs.readFileSync(rulesPath, "utf8"));
+    } catch {
+      return {
+        customInstructions: "",
+        verbosity: "normal",
+        maxTurns: 20,
+        timeout: 300,
+        autoCommit: false,
+        ignorePatterns: [],
+        allowedOperations: { createFiles: true, deleteFiles: true, modifyFiles: true, runGitCommands: true },
+      };
+    }
+  }
+
+  _writeVaultRules(rules) {
+    const rulesPath = path.join(this._vaultPath, ".davyjones-rules.json");
+    fs.writeFileSync(rulesPath, JSON.stringify(rules, null, 2), "utf8");
+  }
+
   _applyServiceConfig() {
     if (!this._projectRoot) {
       new Notice("DavyJones project path not configured.");
@@ -157,12 +202,14 @@ class DavyJonesPlugin extends Plugin {
     const mergeScript = path.join(this._projectRoot, "scripts", "_merge_env.sh");
     const rootEnv = path.join(this._projectRoot, ".env");
 
-    // Build profile flags for services that have tokens configured
+    // Build profile flags for services that have tokens AND are enabled
     const config = this._readDavyJonesEnv();
+    const rules = this._readVaultRules();
     const profiles = [];
-    if (config.SLACK_BOT_TOKEN) profiles.push("--profile slack");
-    if (config.GITLAB_TOKEN) profiles.push("--profile gitlab");
-    if (config.GITHUB_TOKEN) profiles.push("--profile github");
+    if (config.SLACK_BOT_TOKEN && config.SLACK_MCP_ENABLED !== "false") profiles.push("--profile slack");
+    if (config.GITLAB_TOKEN && config.GITLAB_MCP_ENABLED !== "false") profiles.push("--profile gitlab");
+    if (config.GITHUB_TOKEN && config.GITHUB_MCP_ENABLED !== "false") profiles.push("--profile github");
+    if (rules.autoCommit) profiles.push("--profile auto-commit");
     const profileFlags = profiles.join(" ");
 
     const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose --profile build-only ${profileFlags} build && docker compose ${profileFlags} up -d 2>&1'`;
@@ -614,6 +661,181 @@ class DavyJonesPlugin extends Plugin {
   }
 }
 
+// ─── History View ─────────────────────────────────────────────
+
+class DavyJonesHistoryView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._commits = [];
+    this._offset = 0;
+    this._expandedCommits = new Set();
+    this._expandedFiles = {};
+    this._lastKnownHead = null;
+  }
+
+  getViewType() { return HISTORY_VIEW_TYPE; }
+  getDisplayText() { return "Vault History"; }
+  getIcon() { return "git-branch"; }
+
+  async onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass("davyjones-history-root");
+    this._loadCommits(true);
+  }
+
+  async onClose() { this.contentEl.empty(); }
+
+  refresh() {
+    try {
+      const head = execSync("git rev-parse HEAD", {
+        cwd: this.plugin._vaultPath, encoding: "utf8", timeout: 3000,
+      }).trim();
+      if (head === this._lastKnownHead) return;
+      this._lastKnownHead = head;
+    } catch { /* ignore */ }
+    this._loadCommits(true);
+  }
+
+  _loadCommits(reset) {
+    if (reset) {
+      this._offset = 0;
+      this._commits = [];
+      this._expandedCommits.clear();
+      this._expandedFiles = {};
+    }
+    try {
+      const sep = "---DJ-COMMIT---";
+      const raw = execSync(
+        `git log --pretty=format:"${sep}%n%H%n%h%n%s%n%ai" --name-only --skip=${this._offset} -n ${HISTORY_PAGE_SIZE}`,
+        { cwd: this.plugin._vaultPath, encoding: "utf8", timeout: 10000 }
+      ).trim();
+      if (!raw) { this._renderCommits(); return; }
+
+      const blocks = raw.split(sep).filter(b => b.trim());
+      for (const block of blocks) {
+        const lines = block.trim().split("\n");
+        if (lines.length < 4) continue;
+        const [fullHash, shortHash, message, date, ...fileLines] = lines;
+        const files = fileLines.filter(f => f.trim());
+        this._commits.push({ fullHash, shortHash, message, date, files });
+      }
+      this._offset += blocks.length;
+
+      if (reset && this._commits.length > 0) {
+        this._lastKnownHead = this._commits[0].fullHash;
+      }
+    } catch (e) {
+      console.error("DavyJones: git log failed", e);
+    }
+    this._renderCommits();
+  }
+
+  _renderCommits() {
+    this.contentEl.empty();
+
+    const header = this.contentEl.createDiv({ cls: "davyjones-history-header" });
+    header.createEl("h4", { text: "Vault History" });
+
+    if (this._commits.length === 0) {
+      this.contentEl.createEl("p", { text: "No commits yet.", cls: "davyjones-history-empty" });
+      return;
+    }
+
+    const list = this.contentEl.createDiv({ cls: "davyjones-history-list" });
+
+    for (const commit of this._commits) {
+      const item = list.createDiv({ cls: "davyjones-history-commit" });
+      const row = item.createDiv({ cls: "davyjones-history-commit-row" });
+
+      const isExpanded = this._expandedCommits.has(commit.fullHash);
+      row.createEl("span", { cls: "davyjones-history-toggle", text: isExpanded ? "\u25BE" : "\u25B8" });
+      row.createEl("span", { cls: "davyjones-history-hash", text: commit.shortHash });
+      row.createEl("span", { cls: "davyjones-history-msg", text: commit.message });
+      row.createEl("span", { cls: "davyjones-history-date", text: this._relativeDate(commit.date) });
+      row.createEl("span", {
+        cls: "davyjones-history-file-count",
+        text: `${commit.files.length} file${commit.files.length !== 1 ? "s" : ""}`,
+      });
+
+      const revertBtn = row.createEl("button", { cls: "davyjones-history-revert-btn", text: "Revert" });
+      revertBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._revertToCommit(commit.fullHash, commit.shortHash);
+      });
+
+      row.addEventListener("click", () => {
+        if (this._expandedCommits.has(commit.fullHash)) {
+          this._expandedCommits.delete(commit.fullHash);
+        } else {
+          this._expandedCommits.add(commit.fullHash);
+        }
+        this._renderCommits();
+      });
+
+      if (isExpanded && commit.files.length > 0) {
+        const filesDiv = item.createDiv({ cls: "davyjones-history-files" });
+        for (const file of commit.files) {
+          const diffKey = `${commit.fullHash}:${file}`;
+          const fileRow = filesDiv.createDiv({ cls: "davyjones-history-file" });
+          fileRow.createEl("span", { cls: "davyjones-history-filename", text: file });
+
+          fileRow.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (this._expandedFiles[diffKey]) {
+              delete this._expandedFiles[diffKey];
+            } else {
+              try {
+                const diff = execSync(
+                  `git diff ${commit.fullHash}~1 ${commit.fullHash} -- "${file}"`,
+                  { cwd: this.plugin._vaultPath, encoding: "utf8", timeout: 5000 }
+                ).trim();
+                this._expandedFiles[diffKey] = diff || "(no diff available)";
+              } catch {
+                this._expandedFiles[diffKey] = "(could not load diff)";
+              }
+            }
+            this._renderCommits();
+          });
+
+          if (this._expandedFiles[diffKey]) {
+            filesDiv.createEl("pre", { cls: "davyjones-history-diff", text: this._expandedFiles[diffKey] });
+          }
+        }
+      }
+    }
+
+    if (this._commits.length >= this._offset) {
+      const moreBtn = this.contentEl.createEl("button", { cls: "davyjones-history-more-btn", text: "Load more" });
+      moreBtn.addEventListener("click", () => this._loadCommits(false));
+    }
+  }
+
+  _revertToCommit(hash, shortHash) {
+    if (!confirm(`Revert vault to commit ${shortHash}?\n\nThis checks out all files from that commit. Your current changes will appear as uncommitted modifications.`)) return;
+    try {
+      execSync(`git checkout ${hash} -- .`, { cwd: this.plugin._vaultPath, timeout: 15000 });
+      new Notice("Vault reverted to " + shortHash);
+      this.plugin._updateGitStatus();
+      this._loadCommits(true);
+    } catch (e) {
+      new Notice("Revert failed: " + e.message);
+    }
+  }
+
+  _relativeDate(dateStr) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    return new Date(dateStr).toLocaleDateString();
+  }
+}
+
 // ─── Settings Tab ─────────────────────────────────────────────
 
 const SERVICE_DEFS = [
@@ -825,19 +1047,130 @@ class DavyJonesSettingTab extends PluginSettingTab {
           });
         }
       }
+
+      // MCP active toggle
+      const enabledKey = `${service.id.toUpperCase()}_MCP_ENABLED`;
+      const isEnabled = this._config[enabledKey] !== "false";
+      new Setting(containerEl)
+        .setName("Active")
+        .setDesc("When off, the token is saved but the MCP service won't start.")
+        .addToggle((toggle) => {
+          toggle.setValue(isEnabled).onChange((value) => {
+            this._config[enabledKey] = value ? "true" : "false";
+            this._dirty = true;
+          });
+        });
+    }
+
+    // ── Vault Rules & Customization ──
+    containerEl.createEl("h3", { text: "Vault Rules & Customization", cls: "davyjones-section-heading" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description davyjones-settings-desc",
+      text: "Configure how agents behave in this vault. These settings are injected into every agent prompt.",
+    });
+
+    const rules = this.plugin._readVaultRules();
+
+    new Setting(containerEl)
+      .setName("Custom Instructions")
+      .setDesc("Injected into every overseer and agent prompt (e.g., language, coding style, constraints).")
+      .addTextArea((text) => {
+        text.setPlaceholder('e.g., "Always respond in Romanian", "Prefer Python over JS"')
+          .setValue(rules.customInstructions || "")
+          .onChange((value) => { rules.customInstructions = value; this._dirty = true; });
+        text.inputEl.rows = 5;
+        text.inputEl.style.width = "100%";
+      });
+
+    new Setting(containerEl)
+      .setName("Response Verbosity")
+      .setDesc("Controls how detailed agent output is.")
+      .addDropdown((drop) => {
+        drop.addOption("concise", "Concise")
+          .addOption("normal", "Normal")
+          .addOption("detailed", "Detailed")
+          .setValue(rules.verbosity || "normal")
+          .onChange((value) => { rules.verbosity = value; this._dirty = true; });
+      });
+
+    new Setting(containerEl)
+      .setName("Default Max Turns")
+      .setDesc("Maximum conversation turns per agent (default: 20).")
+      .addText((text) => {
+        text.setPlaceholder("20")
+          .setValue(String(rules.maxTurns || 20))
+          .onChange((value) => { rules.maxTurns = parseInt(value, 10) || 20; this._dirty = true; });
+        text.inputEl.type = "number";
+        text.inputEl.style.width = "80px";
+      });
+
+    new Setting(containerEl)
+      .setName("Agent Timeout (seconds)")
+      .setDesc("Maximum time for a single agent run (default: 300).")
+      .addText((text) => {
+        text.setPlaceholder("300")
+          .setValue(String(rules.timeout || 300))
+          .onChange((value) => { rules.timeout = parseInt(value, 10) || 300; this._dirty = true; });
+        text.inputEl.type = "number";
+        text.inputEl.style.width = "80px";
+      });
+
+    new Setting(containerEl)
+      .setName("Auto-commit")
+      .setDesc("Automatically commit vault changes made by agents.")
+      .addToggle((toggle) => {
+        toggle.setValue(rules.autoCommit === true)
+          .onChange((value) => { rules.autoCommit = value; this._dirty = true; });
+      });
+
+    new Setting(containerEl)
+      .setName("Ignore Patterns")
+      .setDesc("Glob patterns the overseer skips, one per line (e.g., _templates/*, daily/*).")
+      .addTextArea((text) => {
+        text.setPlaceholder("_templates/*\ndaily/*\n.obsidian/*")
+          .setValue((rules.ignorePatterns || []).join("\n"))
+          .onChange((value) => {
+            rules.ignorePatterns = value.split("\n").map(s => s.trim()).filter(Boolean);
+            this._dirty = true;
+          });
+        text.inputEl.rows = 4;
+        text.inputEl.style.width = "100%";
+      });
+
+    // Allowed operations
+    containerEl.createEl("h4", { text: "Allowed Operations", cls: "davyjones-subsection-heading" });
+    const ops = rules.allowedOperations || {};
+    for (const [key, label, desc] of [
+      ["createFiles", "Create files", "Allow agents to create new notes and files"],
+      ["deleteFiles", "Delete files", "Allow agents to delete existing files"],
+      ["modifyFiles", "Modify existing files", "Allow agents to edit existing notes"],
+      ["runGitCommands", "Run git commands", "Allow agents to execute git operations"],
+    ]) {
+      new Setting(containerEl)
+        .setName(label)
+        .setDesc(desc)
+        .addToggle((toggle) => {
+          toggle.setValue(ops[key] !== false)
+            .onChange((value) => {
+              if (!rules.allowedOperations) rules.allowedOperations = {};
+              rules.allowedOperations[key] = value;
+              this._dirty = true;
+            });
+        });
     }
 
     // ── Apply button ──
     const applyContainer = containerEl.createDiv({ cls: "davyjones-apply-container" });
     new Setting(applyContainer)
       .setName("")
-      .setDesc("Saves to .davyjones.env and restarts the dispatcher.")
+      .setDesc("Saves settings and restarts the dispatcher.")
       .addButton((btn) => {
         btn
           .setButtonText("Apply Changes")
           .setCta()
           .onClick(() => {
             this.plugin._writeDavyJonesEnv(this._config);
+            this.plugin._writeVaultRules(rules);
             this.plugin._applyServiceConfig();
             this._dirty = false;
           });

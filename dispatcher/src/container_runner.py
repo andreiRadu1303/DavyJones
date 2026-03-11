@@ -16,6 +16,7 @@ from src.config import (
 from src.models import DispatchPayload, TaskResult
 from src.prompt_builder import build_prompt
 from src.token_refresh import CredStatus, ensure_valid_token, get_cred_health
+from src.vault_rules import load_vault_rules
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ def run_raw(
             "GITLAB_TOKEN": os.environ.get("GITLAB_TOKEN", ""),
             "SLACK_BOT_TOKEN": os.environ.get("SLACK_BOT_TOKEN", ""),
             "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+            "SLACK_MCP_ENABLED": os.environ.get("SLACK_MCP_ENABLED", "true"),
+            "GITHUB_MCP_ENABLED": os.environ.get("GITHUB_MCP_ENABLED", "true"),
+            "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
         }
 
         volumes = {
@@ -151,7 +155,8 @@ def run_task(
     High-level wrapper around run_raw() that builds the prompt and parses
     Claude CLI output into a TaskResult.
     """
-    prompt = build_prompt(payload)
+    vault_rules = load_vault_rules()
+    prompt = build_prompt(payload, vault_rules=vault_rules)
     max_turns = payload.metadata.get("max_iterations") or 20
     timeout = timeout_override or AGENT_TIMEOUT_SECONDS
 

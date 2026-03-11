@@ -30,6 +30,7 @@ from src.overseer_prompt import CommitData, build as build_overseer_prompt
 from src.plan_models import OverseerPlan, PlannedTask, topological_levels, validate_plan
 from src.status_updater import update_status
 from src.task_builder import build as build_task_payload
+from src.vault_rules import load_vault_rules
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,8 @@ def run_overseer(commit_data: CommitData) -> OverseerPlan | None:
         logger.info("No changed files — skipping overseer")
         return OverseerPlan(tasks=[])
 
-    prompt = build_overseer_prompt(commit_data)
+    vault_rules = load_vault_rules()
+    prompt = build_overseer_prompt(commit_data, vault_rules=vault_rules)
     logger.info("Running overseer for %d changed files", len(commit_data.changed_files))
     logger.debug("Overseer prompt (first 500 chars): %s", prompt[:500])
 

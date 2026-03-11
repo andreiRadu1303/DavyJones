@@ -46,22 +46,25 @@ obsidian_url = os.environ.get('OBSIDIAN_MCP_URL', 'http://obsidian-mcp:3010/sse'
 if obsidian_url:
     servers['obsidian'] = {'type': 'sse', 'url': obsidian_url}
 
-# Slack MCP (if token configured)
+# Slack MCP (if token configured and enabled)
 slack_url = os.environ.get('SLACK_MCP_URL', 'http://slack-mcp:3001/sse')
 slack_token = os.environ.get('SLACK_BOT_TOKEN', '')
-if slack_token:
+slack_enabled = os.environ.get('SLACK_MCP_ENABLED', 'true').lower() != 'false'
+if slack_token and slack_enabled:
     servers['slack'] = {'type': 'sse', 'url': slack_url}
 
 # GitLab MCP (SSE server on Docker network, or custom URL)
 gitlab_token = os.environ.get('GITLAB_TOKEN', '')
 gitlab_url = os.environ.get('GITLAB_MCP_URL', 'http://gitlab-mcp:3002/sse')
-if gitlab_token:
+gitlab_enabled = os.environ.get('GITLAB_MCP_ENABLED', 'true').lower() != 'false'
+if gitlab_token and gitlab_enabled:
     servers['gitlab'] = {'type': 'sse', 'url': gitlab_url}
 
-# GitHub MCP (if token configured)
+# GitHub MCP (if token configured and enabled)
 github_token = os.environ.get('GITHUB_TOKEN', '')
 github_url = os.environ.get('GITHUB_MCP_URL', 'http://github-mcp:3003/sse')
-if github_token:
+github_enabled = os.environ.get('GITHUB_MCP_ENABLED', 'true').lower() != 'false'
+if github_token and github_enabled:
     servers['github'] = {'type': 'sse', 'url': github_url}
 
 config = {'mcpServers': servers}

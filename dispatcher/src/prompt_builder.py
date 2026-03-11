@@ -1,7 +1,7 @@
 from src.models import DispatchPayload
 
 
-def build_prompt(payload: DispatchPayload) -> str:
+def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> str:
     """Build the full prompt for Claude CLI from context + task prompt."""
     parts = [
         "You are working inside an Obsidian vault at /vault.",
@@ -40,5 +40,30 @@ def build_prompt(payload: DispatchPayload) -> str:
             "- Use [[wiki-link]] syntax for cross-references where appropriate.",
             "- Write your results directly to the task file under a '## Results' section.",
         ])
+
+    # Vault-specific custom instructions
+    if vault_rules:
+        custom = vault_rules.get("customInstructions", "")
+        if custom:
+            parts.extend(["", "## Vault Custom Instructions", "", custom])
+
+        ops = vault_rules.get("allowedOperations", {})
+        restrictions = []
+        if not ops.get("createFiles", True):
+            restrictions.append("- Do NOT create new files")
+        if not ops.get("deleteFiles", True):
+            restrictions.append("- Do NOT delete files")
+        if not ops.get("modifyFiles", True):
+            restrictions.append("- Do NOT modify existing files (read-only)")
+        if not ops.get("runGitCommands", True):
+            restrictions.append("- Do NOT run git commands")
+        if restrictions:
+            parts.extend(["", "## Operation Restrictions", ""] + restrictions)
+
+        verbosity = vault_rules.get("verbosity", "normal")
+        if verbosity == "concise":
+            parts.extend(["", "- Keep your output concise and minimal."])
+        elif verbosity == "detailed":
+            parts.extend(["", "- Be thorough and detailed in your output."])
 
     return "\n".join(parts)
