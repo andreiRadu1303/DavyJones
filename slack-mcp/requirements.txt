@@ -1,0 +1,4 @@
+mcp[cli]>=1.0.0
+slack-sdk>=3.33.0
+uvicorn>=0.30.0
+starlette>=0.37.0

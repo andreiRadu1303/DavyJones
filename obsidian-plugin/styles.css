@@ -1,0 +1,299 @@
+/* ─── Hide Obsidian's default properties panel ────────────── */
+.metadata-container {
+  display: none !important;
+}
+
+/* ─── Nav bar ──────────────────────────────────────────────── */
+
+.davyjones-nav {
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* ─── Property bar (single row) ────────────────────────────── */
+
+.davyjones-props {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.davyjones-spacer {
+  flex: 1;
+  min-width: 12px;
+}
+
+/* ─── Status bar indicators ───────────────────────────────── */
+
+.davyjones-statusbar,
+.davyjones-gitbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.davyjones-statusbar-text {
+  font-size: 11px;
+}
+
+.davyjones-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* Connection status */
+.davyjones-dot-on {
+  background: rgb(70, 180, 105);
+}
+
+.davyjones-dot-off {
+  background: rgb(225, 80, 80);
+}
+
+/* Credential warning (amber, pulsing) */
+.davyjones-dot-warn {
+  background: rgb(225, 170, 50);
+  animation: davyjones-pulse 2s ease-in-out infinite;
+}
+
+/* Auth expired (red, pulsing) */
+.davyjones-dot-auth-error {
+  background: rgb(225, 80, 80);
+  animation: davyjones-pulse 1.5s ease-in-out infinite;
+}
+
+/* Git status */
+.davyjones-dot-dirty {
+  background: rgb(225, 170, 50);
+}
+
+.davyjones-dot-clean {
+  background: rgb(70, 180, 105);
+}
+
+.davyjones-dot-commit {
+  background: rgb(70, 150, 230);
+  animation: davyjones-pulse 1s ease-in-out infinite;
+}
+
+@keyframes davyjones-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Type + status badges */
+.davyjones-prop-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.davyjones-prop-badge:hover {
+  filter: brightness(1.2);
+}
+
+.davyjones-prop-badge.is-clickable {
+  cursor: pointer;
+}
+
+.davyjones-t-note {
+  background: var(--background-secondary);
+  color: var(--text-muted);
+}
+
+.davyjones-t-task {
+  background: rgba(var(--interactive-accent-rgb), 0.15);
+  color: var(--interactive-accent);
+}
+
+.davyjones-t-job {
+  background: rgba(180, 120, 240, 0.15);
+  color: rgb(180, 120, 240);
+}
+
+.davyjones-s-pending {
+  background: rgba(255, 185, 50, 0.15);
+  color: rgb(225, 170, 50);
+}
+
+.davyjones-s-in_progress {
+  background: rgba(55, 155, 250, 0.15);
+  color: rgb(70, 150, 230);
+}
+
+.davyjones-s-completed {
+  background: rgba(75, 195, 115, 0.15);
+  color: rgb(70, 180, 105);
+}
+
+.davyjones-s-failed {
+  background: rgba(245, 75, 75, 0.15);
+  color: rgb(225, 80, 80);
+}
+
+/* Tags */
+.davyjones-prop-tags {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.davyjones-prop-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--background-secondary);
+  color: var(--text-faint);
+}
+
+/* Date */
+.davyjones-prop-date {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* ─── Inline search ────────────────────────────────────────── */
+
+.davyjones-search-wrapper {
+  position: relative;
+  width: 200px;
+  flex-shrink: 0;
+}
+
+.davyjones-search {
+  width: 100%;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.davyjones-search::placeholder {
+  color: var(--text-faint);
+}
+
+.davyjones-search:focus {
+  outline: none;
+  background: var(--background-primary);
+  border-color: var(--interactive-accent);
+  width: 300px;
+}
+
+/* ─── Dropdown ─────────────────────────────────────────────── */
+
+.davyjones-results {
+  display: none;
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  width: 380px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  max-height: 340px;
+  overflow-y: auto;
+  z-index: 1000;
+  padding: 4px 0;
+}
+
+.davyjones-results.is-visible {
+  display: block;
+}
+
+.davyjones-item {
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.davyjones-item:hover,
+.davyjones-item.is-selected {
+  background: var(--background-modifier-hover);
+}
+
+.davyjones-item-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.davyjones-item-name {
+  color: var(--text-normal);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.davyjones-item-path {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: auto;
+}
+
+.davyjones-item-status {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ─── Settings tab ────────────────────────────────────────── */
+
+.davyjones-settings-desc {
+  margin-bottom: 16px;
+  color: var(--text-muted);
+}
+
+.davyjones-service-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 4px;
+  margin-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.davyjones-service-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.davyjones-service-status {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.davyjones-service-status.is-enabled {
+  background: rgba(75, 195, 115, 0.15);
+  color: rgb(70, 180, 105);
+}
+
+.davyjones-service-status.is-disabled {
+  background: var(--background-secondary);
+  color: var(--text-faint);
+}
+
+.davyjones-apply-container {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}

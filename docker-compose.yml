@@ -1,0 +1,123 @@
+services:
+  dispatcher:
+    build:
+      context: ./dispatcher
+      dockerfile: Dockerfile
+    container_name: davyjones-dispatcher
+    volumes:
+      - ${VAULT_DIR:?Set VAULT_DIR in .env}:/vault
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.claude-credentials.json:/tmp/claude-credentials.json:rw
+      - dispatcher-state:/app/state
+    environment:
+      - VAULT_PATH=/vault
+      - VAULT_HOST_PATH=${VAULT_DIR}
+      - CREDS_HOST_PATH=${PWD}/.claude-credentials.json
+      - DOCKER_NETWORK=davyjones_davyjones
+      - AGENT_IMAGE=davyjones-agent
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
+      - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-1200}
+      - OVERSEER_TIMEOUT_SECONDS=${OVERSEER_TIMEOUT_SECONDS:-600}
+      - OVERSEER_MAX_TURNS=${OVERSEER_MAX_TURNS:-50}
+      - MAX_CONCURRENT_AGENTS=${MAX_CONCURRENT_AGENTS:-3}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_REPO:-}
+      - GITHUB_POLL_INTERVAL=${GITHUB_POLL_INTERVAL:-60}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+    depends_on:
+      - obsidian-mcp
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  # Auto-committer — optional, use `docker compose --profile auto-commit up` to enable
+  auto-committer:
+    build:
+      context: ./auto_committer
+      dockerfile: Dockerfile
+    container_name: davyjones-auto-committer
+    volumes:
+      - ${VAULT_DIR}:/vault
+    environment:
+      - VAULT_PATH=/vault
+      - AUTO_COMMIT_DEBOUNCE_SECONDS=${AUTO_COMMIT_DEBOUNCE_SECONDS:-5}
+      - GIT_AUTHOR_NAME=DavyJones Auto-Committer
+      - GIT_AUTHOR_EMAIL=davyjones@local
+      - GIT_COMMITTER_NAME=DavyJones Auto-Committer
+      - GIT_COMMITTER_EMAIL=davyjones@local
+    profiles:
+      - auto-commit
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  obsidian-mcp:
+    build:
+      context: ./obsidian-mcp
+      dockerfile: Dockerfile
+    container_name: davyjones-obsidian-mcp
+    volumes:
+      - ${VAULT_DIR}:/vault:ro
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  slack-mcp:
+    build:
+      context: ./slack-mcp
+      dockerfile: Dockerfile
+    container_name: davyjones-slack-mcp
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+    profiles:
+      - slack
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  gitlab-mcp:
+    image: zereight050/gitlab-mcp:latest
+    container_name: davyjones-gitlab-mcp
+    environment:
+      - GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_TOKEN:-}
+      - GITLAB_API_URL=https://gitlab.com
+      - SSE=true
+      - HOST=0.0.0.0
+      - PORT=3002
+    profiles:
+      - gitlab
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  github-mcp:
+    build:
+      context: ./github-mcp
+      dockerfile: Dockerfile
+    container_name: davyjones-github-mcp
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN:-}
+    profiles:
+      - github
+    restart: unless-stopped
+    networks:
+      - davyjones
+
+  # Agent image — built here, but containers are spawned by dispatcher per task
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    image: davyjones-agent
+    profiles:
+      - build-only
+
+volumes:
+  dispatcher-state:
+
+networks:
+  davyjones:
+    driver: bridge

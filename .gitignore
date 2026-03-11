@@ -1,0 +1,6 @@
+.env
+.claude-credentials.json
+.claude/
+__pycache__/
+*.pyc
+.pytest_cache/
