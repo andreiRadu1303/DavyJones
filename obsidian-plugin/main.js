@@ -94,7 +94,7 @@ class DavyJonesPlugin extends Plugin {
 
   // ─── .davyjones.env read/write ──────────────────────────────
 
-  _readNoteSysEnv() {
+  _readDavyJonesEnv() {
     const envPath = path.join(this._vaultPath, ".davyjones.env");
     const config = {};
     try {
@@ -114,7 +114,7 @@ class DavyJonesPlugin extends Plugin {
     return config;
   }
 
-  _writeNoteSysEnv(config) {
+  _writeDavyJonesEnv(config) {
     const envPath = path.join(this._vaultPath, ".davyjones.env");
     const lines = [
       "# DavyJones vault configuration",
@@ -684,7 +684,7 @@ class DavyJonesSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    this._config = this.plugin._readNoteSysEnv();
+    this._config = this.plugin._readDavyJonesEnv();
     this._dirty = false;
 
     containerEl.createEl("h2", { text: "DavyJones Settings" });
@@ -828,7 +828,7 @@ class DavyJonesSettingTab extends PluginSettingTab {
           .setButtonText("Apply Changes")
           .setCta()
           .onClick(() => {
-            this.plugin._writeNoteSysEnv(this._config);
+            this.plugin._writeDavyJonesEnv(this._config);
             this.plugin._applyServiceConfig();
             this._dirty = false;
           });
