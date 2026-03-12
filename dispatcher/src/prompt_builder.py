@@ -25,6 +25,14 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
         "",
     ])
 
+    # Heading rule applies to ALL agents that modify vault notes
+    heading_rule = (
+        "- NEVER start a note with a heading that duplicates the filename. "
+        "For example, if the file is 'Zelda.md', do NOT add '# Zelda' as the first line. "
+        "Obsidian already displays the filename as the note title — a duplicate heading "
+        "looks broken. Start the note body with frontmatter or directly with content."
+    )
+
     if is_subtask:
         parts.extend([
             "- You are a sub-task agent — focus ONLY on the specific task described above.",
@@ -32,12 +40,13 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
             "- When done, output a clear summary: what you did, success or failure, and key details.",
             "- Do NOT modify, write to, or delete the task file — results are aggregated automatically.",
             f"- IMPORTANT: The file `{payload.task_file_path}` is managed by the dispatcher. Do not touch it.",
+            heading_rule,
         ])
     else:
         parts.extend([
             "- Read and write files relative to /vault.",
             "- When creating new notes, include YAML frontmatter.",
-            "- Do NOT start a note with a heading that duplicates the filename — Obsidian already displays the filename as the title.",
+            heading_rule,
             "- Use [[wiki-link]] syntax for cross-references where appropriate.",
             "- Write your results directly to the task file under a '## Results' section.",
         ])

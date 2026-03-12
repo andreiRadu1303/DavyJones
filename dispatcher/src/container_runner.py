@@ -5,6 +5,7 @@ import os
 import tarfile
 
 import docker
+import requests.exceptions
 
 from src.config import (
     AGENT_IMAGE,
@@ -118,7 +119,36 @@ def run_raw(
                     container.short_id, max_turns, timeout)
 
         # Wait for completion
-        result = container.wait(timeout=timeout)
+        try:
+            result = container.wait(timeout=timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as e:
+            # Docker socket timeout — container is still running
+            logger.error("Container %s timed out after %ds, killing it",
+                         container.short_id, timeout)
+            try:
+                container.stop(timeout=10)
+            except Exception:
+                try:
+                    container.kill()
+                except Exception:
+                    pass
+
+            # Grab whatever logs the container produced before timeout
+            stdout = ""
+            stderr = ""
+            try:
+                stdout = container.logs(stdout=True, stderr=False).decode()
+                stderr = container.logs(stdout=False, stderr=True).decode()
+            except Exception:
+                pass
+
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
+
+            return 1, stdout, f"Container timed out after {timeout}s: {e}"
+
         exit_code = result.get("StatusCode", -1)
         stdout = container.logs(stdout=True, stderr=False).decode()
         stderr = container.logs(stdout=False, stderr=True).decode()
@@ -171,6 +201,10 @@ def run_task(
         )
     except RuntimeError as e:
         return TaskResult(status="failed", error=str(e))
+    except Exception as e:
+        logger.exception("Unexpected error running agent container for %s",
+                         payload.task_file_path)
+        return TaskResult(status="failed", error=f"Container error: {e}")
 
     if exit_code != 0:
         error_msg = stderr.strip() or stdout.strip() or "Unknown error"

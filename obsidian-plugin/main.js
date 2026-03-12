@@ -30,12 +30,11 @@ class DavyJonesPlugin extends Plugin {
     this._gitDirty = false;
     this._gitChangeCount = 0;
     this._committing = false;
+    this._commitDone = false;
+    this._commitDoneTimer = null;
 
-    // Send to Claude
-    this.addRibbonIcon("send", "DavyJones: Send to Claude", () => this.sendToClaude());
-    this.addCommand({ id: "send-to-claude", name: "Send to Claude", callback: () => this.sendToClaude() });
-
-    // Commit command
+    // Commit
+    this.addRibbonIcon("git-commit-horizontal", "DavyJones: Commit", () => this.commitChanges());
     this.addCommand({ id: "commit-changes", name: "Commit vault changes", callback: () => this.commitChanges() });
 
     // Switch vault command
@@ -293,6 +292,7 @@ class DavyJonesPlugin extends Plugin {
     if (!this._gitBarEl) return;
     this._gitBarEl.empty();
 
+    // State: working (blue pulsing)
     if (this._committing) {
       this._gitBarEl.createEl("span", { cls: "davyjones-dot davyjones-dot-commit" });
       this._gitBarEl.createEl("span", { text: "committing...", cls: "davyjones-statusbar-text" });
@@ -300,18 +300,29 @@ class DavyJonesPlugin extends Plugin {
       return;
     }
 
+    // State: dirty (yellow)
     if (this._gitDirty) {
+      clearTimeout(this._commitDoneTimer);
+      this._commitDone = false;
       this._gitBarEl.createEl("span", { cls: "davyjones-dot davyjones-dot-dirty" });
       this._gitBarEl.createEl("span", {
         text: `${this._gitChangeCount} change${this._gitChangeCount !== 1 ? "s" : ""}`,
         cls: "davyjones-statusbar-text",
       });
       this._gitBarEl.style.cursor = "pointer";
-    } else {
+      return;
+    }
+
+    // State: done (green, auto-fades after 3s)
+    if (this._commitDone) {
       this._gitBarEl.createEl("span", { cls: "davyjones-dot davyjones-dot-clean" });
       this._gitBarEl.createEl("span", { text: "committed", cls: "davyjones-statusbar-text" });
       this._gitBarEl.style.cursor = "default";
+      return;
     }
+
+    // No changes, no recent commit — hide
+    this._gitBarEl.style.cursor = "default";
   }
 
   // ─── Commit ──────────────────────────────────────────────────
@@ -326,7 +337,7 @@ class DavyJonesPlugin extends Plugin {
     this._committing = true;
     this._renderGitBar();
 
-    const cmd = 'git add -A && git -c user.name="DavyJones" -c user.email="davyjones@local" commit -m "DavyJones: vault update"';
+    const cmd = 'git add -A && git -c user.name="Vault Owner" -c user.email="vault-owner@local" commit -m "vault update"';
     exec(cmd, { cwd: this._vaultPath, timeout: 15000 }, (err, stdout, stderr) => {
       this._committing = false;
       if (err) {
@@ -334,6 +345,13 @@ class DavyJonesPlugin extends Plugin {
         new Notice("Commit failed: " + (stderr?.split("\n")[0] || err.message));
       } else {
         new Notice("Changes committed");
+        // Show green "committed" for 3 seconds then fade
+        this._commitDone = true;
+        clearTimeout(this._commitDoneTimer);
+        this._commitDoneTimer = setTimeout(() => {
+          this._commitDone = false;
+          this._renderGitBar();
+        }, 3000);
       }
       this._updateGitStatus();
       this._updateStatusBar();
@@ -518,30 +536,6 @@ class DavyJonesPlugin extends Plugin {
     await this.app.vault.modify(file, fm + content);
   }
 
-  // ─── Send to Claude ────────────────────────────────────────
-
-  async sendToClaude() {
-    const file = this.app.workspace.getActiveFile();
-    if (!file) return new Notice("No active file");
-
-    if (!this._isVaultActive()) {
-      new Notice("Vault is not active. Click 'DavyJones (offline)' in the status bar to switch.");
-      return;
-    }
-
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
-      if (fm.status === "pending") return new Notice("Already pending");
-      if (fm.status === "in_progress") return new Notice("Task is running");
-      fm.type = "task";
-      fm.status = "pending";
-      delete fm.completed_at;
-      delete fm.error_message;
-    });
-    new Notice("Sent to Claude — commit to dispatch");
-    // Refresh git status since frontmatter changed
-    setTimeout(() => this._updateGitStatus(), 500);
-  }
-
   // ─── Combined UI: property bar + search ────────────────────
 
   renderUI() {
@@ -572,14 +566,10 @@ class DavyJonesPlugin extends Plugin {
 
     // Status badge (if present)
     if (fm.status) {
-      const statusBadge = props.createEl("span", {
+      props.createEl("span", {
         cls: `davyjones-prop-badge davyjones-s-${fm.status}`,
         text: fm.status.replace("_", " "),
       });
-      if (fm.status === "completed" || fm.status === "failed") {
-        statusBadge.classList.add("is-clickable");
-        statusBadge.addEventListener("click", () => this.sendToClaude());
-      }
     }
 
     // Tags

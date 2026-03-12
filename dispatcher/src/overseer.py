@@ -215,6 +215,7 @@ MAX_RETRIES_ON_MAX_TURNS = 1  # retry once with doubled turns
 def _execute_single_task(
     task: PlannedTask,
     auto_commit_fn,
+    dependency_outputs: dict[str, str] | None = None,
 ) -> TaskResult:
     """Execute a single planned task in an agent container.
 
@@ -223,6 +224,11 @@ def _execute_single_task(
 
     Status updates and result writing are handled by execute_plan() after
     all tasks for a file complete — this function just runs the agent.
+
+    Args:
+        dependency_outputs: map of dependency task_id → output_text from
+            completed predecessors. Injected into the prompt so the agent
+            can use results from earlier tasks without redoing work.
     """
     logger.info("Executing task %s: %s (max_turns=%d)", task.id, task.description, task.max_turns)
 
@@ -234,6 +240,23 @@ def _execute_single_task(
 
     current_turns = task.max_turns
     current_prompt = task.prompt
+
+    # Inject dependency results into prompt so agent can build on previous work
+    if dependency_outputs:
+        dep_sections = []
+        for dep_id, dep_output in dependency_outputs.items():
+            if dep_output:
+                dep_sections.append(f"### Results from {dep_id}\n{dep_output.strip()}")
+        if dep_sections:
+            dep_context = "\n\n".join(dep_sections)
+            current_prompt = (
+                f"{task.prompt}\n\n"
+                f"## Results from previous tasks\n\n"
+                f"The following tasks completed before yours. Use their results — "
+                f"do NOT redo any work they already did.\n\n"
+                f"{dep_context}"
+            )
+
     previous_output = None
 
     for attempt in range(1 + MAX_RETRIES_ON_MAX_TURNS):
@@ -284,6 +307,27 @@ def _execute_single_task(
     elif previous_output:
         result.output_text = previous_output
     return result
+
+
+def _collect_dependency_outputs(
+    task: PlannedTask,
+    results: dict[str, TaskResult],
+) -> dict[str, str] | None:
+    """Collect output_text from completed dependency tasks.
+
+    Returns a dict of dep_id → output_text for completed deps with output,
+    or None if there are no dependency outputs to forward.
+    """
+    if not task.depends_on:
+        return None
+
+    dep_outputs: dict[str, str] = {}
+    for dep_id in task.depends_on:
+        dep_result = results.get(dep_id)
+        if dep_result and dep_result.output_text:
+            dep_outputs[dep_id] = dep_result.output_text
+
+    return dep_outputs if dep_outputs else None
 
 
 def execute_plan(
@@ -351,14 +395,18 @@ def execute_plan(
 
         if len(runnable) == 1:
             task = runnable[0]
-            result = _execute_single_task(task, auto_commit_fn)
+            dep_outputs = _collect_dependency_outputs(task, results)
+            result = _execute_single_task(task, auto_commit_fn, dep_outputs)
             results[task.id] = result
             if result.status == "failed":
                 failed_ids.add(task.id)
         else:
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_AGENTS) as pool:
                 future_to_task = {
-                    pool.submit(_execute_single_task, task, auto_commit_fn): task
+                    pool.submit(
+                        _execute_single_task, task, auto_commit_fn,
+                        _collect_dependency_outputs(task, results),
+                    ): task
                     for task in runnable
                 }
                 for future in as_completed(future_to_task):
