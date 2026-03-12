@@ -5,5 +5,5 @@
   "minAppVersion": "1.0.0",
   "description": "Send notes to Claude for processing. Select a note and click the rocket button (or run the command) to make it a task.",
   "author": "DavyJones",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

@@ -529,17 +529,23 @@ class DavyJonesPlugin extends Plugin {
       return;
     }
 
+    let didUpdate = false;
     await this.app.fileManager.processFrontMatter(file, (fm) => {
-      if (fm.status === "pending") return new Notice("Already pending");
-      if (fm.status === "in_progress") return new Notice("Task is running");
+      if (fm.status === "pending" || fm.status === "in_progress") return;
       fm.type = "task";
       fm.status = "pending";
       delete fm.completed_at;
       delete fm.error_message;
+      didUpdate = true;
     });
-    new Notice("Sent to Claude — commit to dispatch");
-    // Refresh git status since frontmatter changed
-    setTimeout(() => this._updateGitStatus(), 500);
+
+    if (!didUpdate) {
+      new Notice("Task already pending or running");
+      return;
+    }
+
+    new Notice("Sending to Claude...");
+    setTimeout(() => this.commitChanges(), 500);
   }
 
   // ─── Combined UI: property bar + search ────────────────────
