@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 
 import frontmatter
@@ -11,21 +12,28 @@ logger = logging.getLogger(__name__)
 
 LOCK_FILE = os.path.join(VAULT_PATH, ".git", "davyjones.lock")
 
+_lock = threading.Lock()
+
 
 def _acquire_lock() -> None:
-    """Simple file-based lock."""
-    lock_dir = os.path.dirname(LOCK_FILE)
-    os.makedirs(lock_dir, exist_ok=True)
-    with open(LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    """Acquire in-process lock and write file signal for auto-committer."""
+    _lock.acquire()
+    try:
+        os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
 
 
 def _release_lock() -> None:
-    """Release file-based lock."""
+    """Remove file signal and release in-process lock."""
     try:
         os.remove(LOCK_FILE)
     except FileNotFoundError:
         pass
+    finally:
+        _lock.release()
 
 
 def update_status(

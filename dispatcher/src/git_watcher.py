@@ -34,7 +34,7 @@ def get_current_head(repo: git.Repo) -> Optional[str]:
     """Get the current HEAD SHA, or None if repo has no commits."""
     try:
         return str(repo.head.commit.hexsha)
-    except ValueError:
+    except Exception:
         return None
 
 
@@ -128,7 +128,7 @@ def pull_remote(repo: git.Repo) -> bool:
         logger.warning("git pull failed (will retry next cycle): %s", e)
         return False
     except Exception:
-        logger.debug("No remote tracking branch or pull skipped")
+        logger.warning("Unexpected error during pull (will retry next cycle)", exc_info=True)
         return False
 
 
@@ -149,6 +149,15 @@ def get_new_commit_ranges(repo: git.Repo, last_sha: Optional[str]) -> list[tuple
         return []
 
     if last_sha == current:
+        return []
+
+    # Validate last_sha still exists (handles force-push/re-init)
+    try:
+        repo.commit(last_sha)
+    except Exception:
+        logger.warning("Stored SHA %s no longer exists (force-push?). Resetting to HEAD=%s",
+                       last_sha[:8], current[:8])
+        save_last_sha(current)
         return []
 
     # Return a single range from last processed to current HEAD

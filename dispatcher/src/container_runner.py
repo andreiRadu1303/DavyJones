@@ -127,17 +127,7 @@ def run_raw(
         if stderr:
             logger.info("Container stderr: %s", stderr[:500])
 
-        # Clean up container
-        try:
-            container.remove()
-        except Exception:
-            logger.warning("Failed to remove container %s", container.short_id)
-
         return exit_code, stdout, stderr
-
-    except Exception:
-        # Re-raise after cleanup
-        raise
     finally:
         if container:
             try:
