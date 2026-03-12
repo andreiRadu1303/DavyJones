@@ -65,7 +65,7 @@ def _decomposition_rules() -> list[str]:
         "- All sub-tasks for the same job share the same `file_path` (the job file)",
         "- Each sub-task `prompt` must be self-contained — the agent won't see other tasks or this plan",
         "- Give each agent enough context in its prompt to work independently (IDs, names, paths)",
-        "- Sub-task prompts should instruct the agent to DO the work and output a summary of what it did",
+        "- Sub-task prompts should instruct the agent to DO the work",
         "- Sub-task prompts must NOT instruct agents to write results back to the task file",
         "  (the dispatcher aggregates all results automatically)",
         "",

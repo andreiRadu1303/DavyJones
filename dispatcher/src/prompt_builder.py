@@ -37,7 +37,6 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
         parts.extend([
             "- You are a sub-task agent — focus ONLY on the specific task described above.",
             "- Do your work using the available MCP tools (Slack, GitLab, Obsidian, etc.).",
-            "- When done, output a clear summary: what you did, success or failure, and key details.",
             "- Do NOT modify, write to, or delete the task file — results are aggregated automatically.",
             f"- IMPORTANT: The file `{payload.task_file_path}` is managed by the dispatcher. Do not touch it.",
             heading_rule,

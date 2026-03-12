@@ -29,6 +29,12 @@ GITLAB_MCP_ENABLED = os.environ.get("GITLAB_MCP_ENABLED", "true").lower() != "fa
 # HTTP API for direct task submission
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "5555"))
 
+# Scribe (report generator)
+REPORTS_DIR = os.path.join(STATE_DIR, "reports")
+MAX_REPORTS = int(os.environ.get("MAX_REPORTS", "200"))
+SCRIBE_MAX_TURNS = int(os.environ.get("SCRIBE_MAX_TURNS", "5"))
+SCRIBE_TIMEOUT = int(os.environ.get("SCRIBE_TIMEOUT", "120"))
+
 # Docker container spawning
 VAULT_HOST_PATH = os.environ.get("VAULT_HOST_PATH", "")
 CREDS_HOST_PATH = os.environ.get("CREDS_HOST_PATH", "")

@@ -21,6 +21,7 @@ from src.git_watcher import (
     save_last_sha,
 )
 from src.overseer import execute_plan, gather_commit_data, run_overseer
+from src.scribe import ScribeJob, enqueue as scribe_enqueue
 from src.status_updater import _acquire_lock, _release_lock, update_status
 from src.task_builder import build
 
@@ -180,12 +181,27 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
 
     # Execute the plan
     logger.info("Executing overseer plan: %d tasks", len(plan.tasks))
+    t_start = time.time()
     results = execute_plan(plan, _auto_commit)
+    duration = time.time() - t_start
 
     succeeded = sum(1 for r in results.values() if r.status == "completed")
     failed = sum(1 for r in results.values() if r.status == "failed")
     logger.info("Plan completed: %d tasks, %d succeeded, %d failed",
                 len(plan.tasks), succeeded, failed)
+
+    # Enqueue Scribe report (fire-and-forget)
+    try:
+        scribe_enqueue(ScribeJob(
+            plan=plan,
+            results=results,
+            source="commit",
+            source_detail={"from_sha": from_sha, "to_sha": to_sha},
+            description=f"Commit {from_sha[:8]}..{to_sha[:8]}: {len(plan.tasks)} tasks",
+            duration_seconds=duration,
+        ))
+    except Exception:
+        logger.exception("Failed to enqueue Scribe job")
 
 
 def main() -> None:
@@ -248,6 +264,13 @@ def main() -> None:
         HttpApi(auto_commit_fn=_auto_commit).start()
     except Exception:
         logger.exception("Failed to start HTTP API")
+
+    # Start Scribe background worker for report generation
+    try:
+        from src.scribe import start as scribe_start
+        scribe_start()
+    except Exception:
+        logger.exception("Failed to start Scribe worker")
 
     logger.info("Dispatcher ready. Polling for changes (overseer mode)...")
 

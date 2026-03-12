@@ -297,7 +297,7 @@ def _execute_single_task(
             f"## What was accomplished so far\n{previous_output}\n\n"
             f"## Instructions\n"
             f"Pick up where the previous agent left off. Do NOT redo work that is "
-            f"already done. Complete the remaining work and output a full summary."
+            f"already done. Complete the remaining work."
         )
 
     # Exhausted retries — return whatever we have

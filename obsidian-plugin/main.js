@@ -21,7 +21,9 @@ const TYPE_OPTIONS = ["note", "task", "job"];
 const HEARTBEAT_MAX_AGE_S = 30;
 const HISTORY_VIEW_TYPE = "davyjones-history";
 const CONTROL_VIEW_TYPE = "davyjones-control";
+const REPORTS_VIEW_TYPE = "davyjones-reports";
 const HISTORY_PAGE_SIZE = 20;
+const REPORTS_PAGE_SIZE = 20;
 
 class DavyJonesPlugin extends Plugin {
   async onload() {
@@ -53,6 +55,11 @@ class DavyJonesPlugin extends Plugin {
     // Task modal
     this.addRibbonIcon("send", "DavyJones: New Task", () => new DavyJonesTaskModal(this.app, this).open());
     this.addCommand({ id: "new-task", name: "Send a new task to agents", callback: () => new DavyJonesTaskModal(this.app, this).open() });
+
+    // Reports panel
+    this.registerView(REPORTS_VIEW_TYPE, (leaf) => new DavyJonesReportsView(leaf, this));
+    this.addRibbonIcon("file-text", "DavyJones: Agent Reports", () => this._activateReportsView());
+    this.addCommand({ id: "open-reports", name: "View agent execution reports", callback: () => this._activateReportsView() });
 
     // Status bar: connection indicator
     this._statusBarEl = this.addStatusBarItem();
@@ -98,6 +105,10 @@ class DavyJonesPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)) {
         if (leaf.view && leaf.view.refresh) leaf.view.refresh();
       }
+      // Refresh reports panel if open
+      for (const leaf of this.app.workspace.getLeavesOfType(REPORTS_VIEW_TYPE)) {
+        if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+      }
     }, 15000));
   }
 
@@ -105,6 +116,7 @@ class DavyJonesPlugin extends Plugin {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(CONTROL_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(REPORTS_VIEW_TYPE);
   }
 
   async _activateHistoryView() {
@@ -126,6 +138,17 @@ class DavyJonesPlugin extends Plugin {
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: CONTROL_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  async _activateReportsView() {
+    const existing = this.app.workspace.getLeavesOfType(REPORTS_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({ type: REPORTS_VIEW_TYPE, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -819,6 +842,192 @@ class DavyJonesTaskModal extends Modal {
 
   onClose() {
     this.contentEl.empty();
+  }
+}
+
+// ─── Reports View ────────────────────────────────────────────
+
+class DavyJonesReportsView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._reports = [];
+    this._offset = 0;
+    this._expandedReports = new Set();
+    this._expandedTasks = new Set();
+    this._reportCache = {};
+    this._lastFetchCount = 0;
+  }
+
+  getViewType() { return REPORTS_VIEW_TYPE; }
+  getDisplayText() { return "Agent Reports"; }
+  getIcon() { return "file-text"; }
+
+  async onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass("davyjones-reports-root");
+    this._loadReports(true);
+  }
+
+  async onClose() { this.contentEl.empty(); }
+
+  refresh() { this._checkForNew(); }
+
+  _apiBase() {
+    const env = this.plugin._readDavyJonesEnv();
+    const port = env.HTTP_PORT || "5555";
+    return `http://localhost:${port}`;
+  }
+
+  async _checkForNew() {
+    try {
+      const resp = await fetch(`${this._apiBase()}/api/reports?limit=1&offset=0`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.reports.length > 0 && (this._reports.length === 0 || data.reports[0].id !== this._reports[0].id)) {
+        this._loadReports(true);
+      }
+    } catch { /* dispatcher offline */ }
+  }
+
+  async _loadReports(reset) {
+    if (reset) {
+      this._offset = 0;
+      this._reports = [];
+      this._expandedReports.clear();
+      this._expandedTasks.clear();
+    }
+    try {
+      const resp = await fetch(`${this._apiBase()}/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${this._offset}`);
+      if (!resp.ok) { this._renderReports(); return; }
+      const data = await resp.json();
+      this._reports = this._reports.concat(data.reports);
+      this._lastFetchCount = data.reports.length;
+      this._offset += data.reports.length;
+    } catch { /* dispatcher offline */ }
+    this._renderReports();
+  }
+
+  async _loadReportDetail(reportId) {
+    if (this._reportCache[reportId]) return this._reportCache[reportId];
+    try {
+      const resp = await fetch(`${this._apiBase()}/api/reports/${reportId}`);
+      if (!resp.ok) return null;
+      const detail = await resp.json();
+      this._reportCache[reportId] = detail;
+      return detail;
+    } catch { return null; }
+  }
+
+  _renderReports() {
+    this.contentEl.empty();
+
+    const header = this.contentEl.createDiv({ cls: "davyjones-reports-header" });
+    header.createEl("h4", { text: "Agent Reports" });
+
+    if (this._reports.length === 0) {
+      this.contentEl.createEl("p", {
+        text: "No reports yet. Reports are generated after each agent execution.",
+        cls: "davyjones-reports-empty",
+      });
+      return;
+    }
+
+    const list = this.contentEl.createDiv({ cls: "davyjones-reports-list" });
+
+    for (const report of this._reports) {
+      const item = list.createDiv({ cls: "davyjones-reports-card" });
+      const row = item.createDiv({ cls: "davyjones-reports-card-row" });
+
+      const isExpanded = this._expandedReports.has(report.id);
+      row.createEl("span", { cls: "davyjones-reports-toggle", text: isExpanded ? "\u25BE" : "\u25B8" });
+      row.createEl("span", { cls: `davyjones-prop-badge davyjones-s-${report.status}`, text: report.status });
+
+      const desc = report.description.length > 60 ? report.description.slice(0, 60) + "..." : report.description;
+      row.createEl("span", { cls: "davyjones-reports-desc", text: desc });
+
+      const taskLabel = report.failed > 0
+        ? `${report.succeeded}/${report.task_count} ok`
+        : `${report.task_count} tasks`;
+      row.createEl("span", { cls: "davyjones-reports-task-count", text: taskLabel });
+      row.createEl("span", { cls: "davyjones-reports-date", text: this._relativeDate(report.created_at) });
+
+      row.addEventListener("click", async () => {
+        if (this._expandedReports.has(report.id)) {
+          this._expandedReports.delete(report.id);
+          this._renderReports();
+        } else {
+          await this._loadReportDetail(report.id);
+          this._expandedReports.add(report.id);
+          this._renderReports();
+        }
+      });
+
+      if (isExpanded) {
+        const detail = this._reportCache[report.id];
+        if (detail) {
+          const detailDiv = item.createDiv({ cls: "davyjones-reports-detail" });
+
+          // Scribe's prose summary
+          if (detail.summary) {
+            detailDiv.createEl("div", { cls: "davyjones-reports-summary", text: detail.summary });
+          }
+
+          detailDiv.createEl("div", {
+            cls: "davyjones-reports-meta",
+            text: `Duration: ${detail.duration_seconds.toFixed(1)}s | Source: ${detail.source}`,
+          });
+
+          if (detail.tasks) {
+            const tasksDiv = detailDiv.createDiv({ cls: "davyjones-reports-tasks" });
+            for (const task of detail.tasks) {
+              const taskKey = `${report.id}:${task.id}`;
+              const taskExpanded = this._expandedTasks.has(taskKey);
+              const taskRow = tasksDiv.createDiv({ cls: "davyjones-reports-task-row" });
+
+              taskRow.createEl("span", { cls: "davyjones-reports-toggle", text: taskExpanded ? "\u25BE" : "\u25B8" });
+              taskRow.createEl("span", { cls: `davyjones-prop-badge davyjones-s-${task.status}`, text: task.status });
+              taskRow.createEl("span", { cls: "davyjones-reports-task-desc", text: `${task.id}: ${task.description}` });
+              if (task.hit_max_turns) {
+                taskRow.createEl("span", { cls: "davyjones-reports-warn", text: "max turns" });
+              }
+
+              taskRow.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (this._expandedTasks.has(taskKey)) {
+                  this._expandedTasks.delete(taskKey);
+                } else {
+                  this._expandedTasks.add(taskKey);
+                }
+                this._renderReports();
+              });
+
+              if (taskExpanded) {
+                const outputText = task.error ? `Error: ${task.error}` : task.summary || "(no output)";
+                tasksDiv.createEl("pre", { cls: "davyjones-reports-output", text: outputText });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (this._lastFetchCount >= REPORTS_PAGE_SIZE) {
+      const moreBtn = this.contentEl.createEl("button", { cls: "davyjones-reports-more-btn", text: "Load more" });
+      moreBtn.addEventListener("click", () => this._loadReports(false));
+    }
+  }
+
+  _relativeDate(dateStr) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    return new Date(dateStr).toLocaleDateString();
   }
 }
 

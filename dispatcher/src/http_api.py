@@ -21,11 +21,14 @@ from src.config import (
     OVERSEER_TIMEOUT_SECONDS,
     VAULT_PATH,
 )
+import time
+
 from src.container_runner import run_raw
 from src.context_resolver import resolve, resolve_batch
 from src.overseer import execute_plan, extract_plan
 from src.overseer_prompt import build_direct_task
 from src.plan_models import OverseerPlan, validate_plan
+from src.scribe import ScribeJob, enqueue as scribe_enqueue, get_report, list_reports
 from src.vault_rules import load_vault_rules
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ class DirectTask:
     task_count: int = 0
     succeeded: int = 0
     failed: int = 0
+    report_id: Optional[str] = None
 
 
 _tasks: dict[str, DirectTask] = {}
@@ -130,7 +134,9 @@ def _execute_direct_task(
         task.task_count = len(plan.tasks)
         logger.info("Direct task %s: executing plan with %d tasks", task.id, task.task_count)
 
+        t_start = time.time()
         results = execute_plan(plan, auto_commit_fn)
+        duration = time.time() - t_start
 
         task.succeeded = sum(1 for r in results.values() if r.status == "completed")
         task.failed = sum(1 for r in results.values() if r.status == "failed")
@@ -140,6 +146,19 @@ def _execute_direct_task(
 
         logger.info("Direct task %s finished: %d/%d succeeded",
                      task.id, task.succeeded, task.task_count)
+
+        # Enqueue Scribe report (fire-and-forget)
+        try:
+            scribe_enqueue(ScribeJob(
+                plan=plan,
+                results=results,
+                source="direct",
+                source_detail={"task_id": task.id},
+                description=description[:200],
+                duration_seconds=duration,
+            ))
+        except Exception:
+            logger.exception("Failed to enqueue Scribe job for direct task %s", task.id)
 
     except Exception as e:
         logger.exception("Direct task %s crashed", task.id)
@@ -153,6 +172,13 @@ def _execute_direct_task(
 def create_app(auto_commit_fn) -> Flask:
     """Create the Flask app with all routes."""
     app = Flask(__name__)
+
+    @app.after_request
+    def _cors(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
 
     @app.route("/api/task", methods=["POST"])
     def submit_task():
@@ -196,7 +222,22 @@ def create_app(auto_commit_fn) -> Flask:
             "task_count": task.task_count,
             "succeeded": task.succeeded,
             "failed": task.failed,
+            "report_id": task.report_id,
         })
+
+    @app.route("/api/reports", methods=["GET"])
+    def list_reports_endpoint():
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        reports = list_reports(limit=min(limit, 100), offset=offset)
+        return jsonify({"reports": reports})
+
+    @app.route("/api/reports/<report_id>", methods=["GET"])
+    def get_report_endpoint(report_id):
+        report = get_report(report_id)
+        if not report:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(report)
 
     @app.route("/api/health", methods=["GET"])
     def health():
