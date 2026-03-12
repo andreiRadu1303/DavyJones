@@ -159,6 +159,29 @@ def _context_format_block() -> list[str]:
     ]
 
 
+def _reports_api_block() -> list[str]:
+    """Instructions for querying the execution reports API."""
+    return [
+        "## Execution Reports",
+        "",
+        "If the user's request references previous work (e.g., \"the files you just added\",",
+        "\"finish what you started\", \"add those to the table of contents\"), query the",
+        "execution reports API to understand what was done:",
+        "",
+        "  curl -s $DAVYJONES_API_URL/api/reports?limit=5",
+        "",
+        "This returns an index of recent reports with: id, description, status, task_count.",
+        "To get full details including per-task file paths and summaries:",
+        "",
+        "  curl -s $DAVYJONES_API_URL/api/reports/<report_id>",
+        "",
+        "Use this to identify exactly which files were created or modified and what each",
+        "agent did. Include the specific file paths in your sub-task prompts so agents",
+        "know exactly what to work with. Do NOT re-execute completed work.",
+        "",
+    ]
+
+
 def _vault_rules_block(vault_rules: dict | None) -> list[str]:
     """Vault-specific rules injection (custom instructions, ignore patterns, etc.)."""
     if not vault_rules:
@@ -332,6 +355,7 @@ def build_direct_task(
     parts.extend(_task_prompt_rules())
     parts.extend(_context_format_block())
     parts.extend(_vault_rules_block(vault_rules))
+    parts.extend(_reports_api_block())
 
     # User task description
     parts.extend([

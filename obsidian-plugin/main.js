@@ -22,8 +22,10 @@ const HEARTBEAT_MAX_AGE_S = 30;
 const HISTORY_VIEW_TYPE = "davyjones-history";
 const CONTROL_VIEW_TYPE = "davyjones-control";
 const REPORTS_VIEW_TYPE = "davyjones-reports";
+const CALENDAR_VIEW_TYPE = "davyjones-calendar";
 const HISTORY_PAGE_SIZE = 20;
 const REPORTS_PAGE_SIZE = 20;
+const CAL_COLORS = ["#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
 
 class DavyJonesPlugin extends Plugin {
   async onload() {
@@ -60,6 +62,12 @@ class DavyJonesPlugin extends Plugin {
     this.registerView(REPORTS_VIEW_TYPE, (leaf) => new DavyJonesReportsView(leaf, this));
     this.addRibbonIcon("file-text", "DavyJones: Agent Reports", () => this._activateReportsView());
     this.addCommand({ id: "open-reports", name: "View agent execution reports", callback: () => this._activateReportsView() });
+
+    // Calendar
+    this.registerView(CALENDAR_VIEW_TYPE, (leaf) => new DavyJonesCalendarView(leaf, this));
+    this.addRibbonIcon("calendar", "DavyJones: Calendar", () => this._activateCalendarView());
+    this.addCommand({ id: "open-calendar", name: "Open calendar", callback: () => this._activateCalendarView() });
+    this.addCommand({ id: "import-ics", name: "Import .ics calendar file", callback: () => new DavyJonesICSImportModal(this.app, this).open() });
 
     // Status bar: connection indicator
     this._statusBarEl = this.addStatusBarItem();
@@ -109,6 +117,10 @@ class DavyJonesPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(REPORTS_VIEW_TYPE)) {
         if (leaf.view && leaf.view.refresh) leaf.view.refresh();
       }
+      // Refresh calendar if open
+      for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
+        if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+      }
     }, 15000));
   }
 
@@ -117,6 +129,7 @@ class DavyJonesPlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(CONTROL_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(REPORTS_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(CALENDAR_VIEW_TYPE);
   }
 
   async _activateHistoryView() {
@@ -149,6 +162,17 @@ class DavyJonesPlugin extends Plugin {
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({ type: REPORTS_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  async _activateCalendarView() {
+    const existing = this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({ type: CALENDAR_VIEW_TYPE, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -237,6 +261,24 @@ class DavyJonesPlugin extends Plugin {
   _writeVaultRules(rules) {
     const rulesPath = path.join(this._vaultPath, ".davyjones-rules.json");
     fs.writeFileSync(rulesPath, JSON.stringify(rules, null, 2), "utf8");
+  }
+
+  _readCalendar() {
+    const calPath = path.join(this._vaultPath, ".davyjones-calendar.json");
+    try {
+      return JSON.parse(fs.readFileSync(calPath, "utf8"));
+    } catch {
+      return {
+        version: 1,
+        calendars: [{ id: "default", name: "Default", color: "#7c3aed", source: "local" }],
+        events: [],
+      };
+    }
+  }
+
+  _writeCalendar(data) {
+    const calPath = path.join(this._vaultPath, ".davyjones-calendar.json");
+    fs.writeFileSync(calPath, JSON.stringify(data, null, 2), "utf8");
   }
 
   _applyServiceConfig() {
@@ -1203,6 +1245,974 @@ class DavyJonesHistoryView extends ItemView {
     const days = Math.floor(hours / 24);
     if (days < 30) return `${days}d ago`;
     return new Date(dateStr).toLocaleDateString();
+  }
+}
+
+// ─── Calendar View ────────────────────────────────────────────
+
+function _expandRecurrence(event, rangeStart, rangeEnd) {
+  const rec = event.recurrence;
+  if (!rec) return [];
+  const base = new Date(event.start);
+  const baseEnd = new Date(event.end || event.start);
+  const dur = baseEnd.getTime() - base.getTime();
+  const freq = rec.freq;
+  const interval = rec.interval || 1;
+  const until = rec.until ? new Date(rec.until) : null;
+  const maxCount = rec.count || 1000;
+  const byDay = (rec.byDay || []).map(d => ["SU","MO","TU","WE","TH","FR","SA"].indexOf(d));
+  const occurrences = [];
+  let cursor = new Date(base);
+  let count = 0;
+
+  for (let i = 0; i < 5000 && count < maxCount; i++) {
+    if (until && cursor > until) break;
+    if (cursor > rangeEnd) break;
+
+    let matches = true;
+    if (freq === "weekly" && byDay.length > 0) {
+      matches = byDay.includes(cursor.getDay());
+    }
+
+    if (matches) {
+      const occEnd = new Date(cursor.getTime() + dur);
+      if (occEnd >= rangeStart && cursor <= rangeEnd) {
+        occurrences.push({ start: new Date(cursor), end: occEnd, event });
+      }
+      if (freq !== "weekly" || byDay.length === 0) count++;
+    }
+
+    if (freq === "daily") {
+      cursor.setDate(cursor.getDate() + (matches && (byDay.length === 0) ? interval : 1));
+    } else if (freq === "weekly") {
+      if (byDay.length > 0) {
+        cursor.setDate(cursor.getDate() + 1);
+        // When we pass Saturday, add interval-1 extra weeks
+        if (cursor.getDay() === 0 && i > 0) cursor.setDate(cursor.getDate() + (interval - 1) * 7);
+      } else {
+        cursor.setDate(cursor.getDate() + interval * 7);
+      }
+    } else if (freq === "monthly") {
+      cursor.setMonth(cursor.getMonth() + interval);
+    } else if (freq === "yearly") {
+      cursor.setFullYear(cursor.getFullYear() + interval);
+    } else {
+      break;
+    }
+  }
+  return occurrences;
+}
+
+function _getEventsForRange(calData, rangeStart, rangeEnd) {
+  const results = [];
+  const calendars = {};
+  for (const cal of (calData.calendars || [])) calendars[cal.id] = cal;
+
+  for (const evt of (calData.events || [])) {
+    const cal = calendars[evt.calendarId] || calData.calendars[0];
+    const color = evt.color || (cal && cal.color) || "#7c3aed";
+
+    if (evt.recurrence) {
+      for (const occ of _expandRecurrence(evt, rangeStart, rangeEnd)) {
+        results.push({ ...evt, _start: occ.start, _end: occ.end, _color: color });
+      }
+    } else {
+      const s = new Date(evt.start);
+      const e = new Date(evt.end || evt.start);
+      if (e >= rangeStart && s <= rangeEnd) {
+        results.push({ ...evt, _start: s, _end: e, _color: color });
+      }
+    }
+  }
+  return results;
+}
+
+function _formatTime(date) {
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const ampm = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 || 12;
+  return m === 0 ? `${h12}${ampm}` : `${h12}:${String(m).padStart(2, "0")}${ampm}`;
+}
+
+const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+class DavyJonesCalendarView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._viewMode = "month";
+    this._currentDate = new Date();
+    this._calendarData = null;
+    this._selectedDate = null;
+  }
+
+  getViewType() { return CALENDAR_VIEW_TYPE; }
+  getDisplayText() { return "Calendar"; }
+  getIcon() { return "calendar"; }
+
+  async onOpen() {
+    this._calendarData = this.plugin._readCalendar();
+    this._render();
+  }
+
+  async onClose() { this.contentEl.empty(); }
+
+  refresh() {
+    const fresh = this.plugin._readCalendar();
+    if (JSON.stringify(fresh) !== JSON.stringify(this._calendarData)) {
+      this._calendarData = fresh;
+      this._render();
+    }
+  }
+
+  _render() {
+    const el = this.contentEl;
+    el.empty();
+    el.addClass("davyjones-cal-root");
+
+    this._renderHeader(el);
+
+    if (this._viewMode === "month") this._renderMonth(el);
+    else if (this._viewMode === "week") this._renderWeek(el);
+    else this._renderDay(el);
+  }
+
+  _renderHeader(container) {
+    const toolbar = container.createDiv({ cls: "davyjones-cal-toolbar" });
+    const d = this._currentDate;
+
+    // Nav arrows
+    const prevBtn = toolbar.createEl("button", { cls: "davyjones-cal-nav-btn", text: "<" });
+    prevBtn.addEventListener("click", () => { this._navigate(-1); });
+    const todayBtn = toolbar.createEl("button", { cls: "davyjones-cal-today-btn", text: "Today" });
+    todayBtn.addEventListener("click", () => { this._currentDate = new Date(); this._selectedDate = null; this._render(); });
+    const nextBtn = toolbar.createEl("button", { cls: "davyjones-cal-nav-btn", text: ">" });
+    nextBtn.addEventListener("click", () => { this._navigate(1); });
+
+    // Title
+    let titleText = "";
+    if (this._viewMode === "month") {
+      titleText = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    } else if (this._viewMode === "week") {
+      const weekStart = this._getWeekStart(d);
+      const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+      titleText = `${MONTHS[weekStart.getMonth()].slice(0,3)} ${weekStart.getDate()} – ${weekEnd.getDate()}, ${weekEnd.getFullYear()}`;
+    } else {
+      titleText = `${DAYS_SHORT[d.getDay()]}, ${MONTHS[d.getMonth()].slice(0,3)} ${d.getDate()}, ${d.getFullYear()}`;
+    }
+    toolbar.createEl("span", { cls: "davyjones-cal-title", text: titleText });
+
+    // View toggle
+    const toggle = toolbar.createDiv({ cls: "davyjones-cal-view-toggle" });
+    for (const mode of ["month", "week", "day"]) {
+      const btn = toggle.createEl("button", { cls: `davyjones-cal-view-btn ${this._viewMode === mode ? "is-active" : ""}`, text: mode.charAt(0).toUpperCase() + mode.slice(1) });
+      btn.addEventListener("click", () => { this._viewMode = mode; this._render(); });
+    }
+
+    // Import button
+    const importBtn = toolbar.createEl("button", { cls: "davyjones-cal-today-btn", text: "Import" });
+    importBtn.addEventListener("click", () => { new DavyJonesICSImportModal(this.app, this.plugin).open(); });
+
+    // New event button
+    const newBtn = toolbar.createEl("button", { cls: "davyjones-cal-new-btn", text: "+ Event" });
+    newBtn.addEventListener("click", () => {
+      new DavyJonesEventModal(this.app, this.plugin, null, this._currentDate).open();
+    });
+  }
+
+  _navigate(dir) {
+    const d = this._currentDate;
+    if (this._viewMode === "month") d.setMonth(d.getMonth() + dir);
+    else if (this._viewMode === "week") d.setDate(d.getDate() + dir * 7);
+    else d.setDate(d.getDate() + dir);
+    this._selectedDate = null;
+    this._render();
+  }
+
+  _getWeekStart(d) {
+    const ws = new Date(d);
+    ws.setDate(ws.getDate() - ws.getDay());
+    ws.setHours(0, 0, 0, 0);
+    return ws;
+  }
+
+  _isSameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  // ── Month View ──
+
+  _renderMonth(container) {
+    const scroll = container.createDiv({ cls: "davyjones-cal-month-scroll" });
+    const grid = scroll.createDiv({ cls: "davyjones-cal-month-grid" });
+    const today = new Date();
+    const year = this._currentDate.getFullYear();
+    const month = this._currentDate.getMonth();
+
+    // Day-of-week headers
+    for (const d of DAYS_SHORT) {
+      grid.createDiv({ cls: "davyjones-cal-dow-header", text: d });
+    }
+
+    // Compute grid start (first visible Sunday)
+    const firstOfMonth = new Date(year, month, 1);
+    const gridStart = new Date(firstOfMonth);
+    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+    // Grid range
+    const gridEnd = new Date(gridStart);
+    gridEnd.setDate(gridEnd.getDate() + 42);
+
+    const events = _getEventsForRange(this._calendarData, gridStart, gridEnd);
+
+    for (let i = 0; i < 42; i++) {
+      const cellDate = new Date(gridStart);
+      cellDate.setDate(gridStart.getDate() + i);
+      const isOtherMonth = cellDate.getMonth() !== month;
+      const isToday = this._isSameDay(cellDate, today);
+      const isSelected = this._selectedDate && this._isSameDay(cellDate, this._selectedDate);
+
+      const cell = grid.createDiv({
+        cls: `davyjones-cal-day-cell${isOtherMonth ? " davyjones-cal-other-month" : ""}${isToday ? " davyjones-cal-today" : ""}${isSelected ? " davyjones-cal-selected" : ""}`,
+      });
+
+      const numEl = cell.createDiv({ cls: "davyjones-cal-day-num" });
+      numEl.createEl("span", { text: String(cellDate.getDate()) });
+
+      // Events for this day
+      const dayStart = new Date(cellDate); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(cellDate); dayEnd.setHours(23, 59, 59, 999);
+      const dayEvents = events.filter(e => e._start <= dayEnd && e._end >= dayStart);
+
+      const eventsEl = cell.createDiv({ cls: "davyjones-cal-day-events" });
+      const maxShow = 3;
+      for (let j = 0; j < Math.min(dayEvents.length, maxShow); j++) {
+        const ev = dayEvents[j];
+        const chip = eventsEl.createDiv({ cls: `davyjones-cal-event-chip${ev.type === "task" ? " is-task" : ""}` });
+        chip.style.background = ev._color;
+        chip.setText(ev.allDay ? ev.title : `${_formatTime(ev._start)} ${ev.title}`);
+        chip.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+          if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+        });
+      }
+      if (dayEvents.length > maxShow) {
+        eventsEl.createDiv({ cls: "davyjones-cal-overflow", text: `+${dayEvents.length - maxShow} more` });
+      }
+
+      cell.addEventListener("click", () => {
+        this._selectedDate = new Date(cellDate);
+        this._render();
+      });
+    }
+
+    // Day detail panel
+    if (this._selectedDate) {
+      this._renderDayDetail(container);
+    }
+  }
+
+  _renderDayDetail(container) {
+    const detail = container.createDiv({ cls: "davyjones-cal-day-detail" });
+    const d = this._selectedDate;
+    const dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+    const events = _getEventsForRange(this._calendarData, dayStart, dayEnd);
+
+    const headerRow = detail.createDiv({ cls: "davyjones-cal-detail-header" });
+    headerRow.createEl("h4", { text: `${DAYS_SHORT[d.getDay()]}, ${MONTHS[d.getMonth()].slice(0,3)} ${d.getDate()}` });
+    const addBtn = headerRow.createEl("button", { cls: "davyjones-cal-new-btn", text: "+ Add" });
+    addBtn.addEventListener("click", () => {
+      new DavyJonesEventModal(this.app, this.plugin, null, d).open();
+    });
+
+    if (events.length === 0) {
+      detail.createEl("p", { cls: "davyjones-cal-detail-empty", text: "No events" });
+      return;
+    }
+
+    events.sort((a, b) => a._start - b._start);
+    for (const ev of events) {
+      const row = detail.createDiv({ cls: "davyjones-cal-detail-event" });
+      const dot = row.createEl("span", { cls: "davyjones-cal-detail-dot" });
+      dot.style.background = ev._color;
+      row.createEl("span", { cls: "davyjones-cal-detail-time", text: ev.allDay ? "All day" : _formatTime(ev._start) });
+      row.createEl("span", { cls: "davyjones-cal-detail-title", text: ev.title });
+      if (ev.type === "task") {
+        const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+        const taskData = original?.task;
+        const lastStatus = taskData?.lastStatus;
+        const lastRun = taskData?.lastDispatchedAt;
+        if (lastStatus) {
+          const statusCls = lastStatus === "completed" ? "is-completed" : lastStatus === "failed" ? "is-failed" : "is-pending";
+          row.createEl("span", { cls: `davyjones-cal-detail-badge ${statusCls}`, text: lastStatus });
+        } else if (lastRun) {
+          row.createEl("span", { cls: "davyjones-cal-detail-badge is-running", text: "running" });
+        } else {
+          row.createEl("span", { cls: "davyjones-cal-detail-badge", text: "task" });
+        }
+      }
+      row.addEventListener("click", () => {
+        const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+        if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+      });
+    }
+  }
+
+  // ── Week View ──
+
+  _renderWeek(container) {
+    const scroll = container.createDiv({ cls: "davyjones-cal-week-scroll" });
+    const weekStart = this._getWeekStart(this._currentDate);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+    const today = new Date();
+    const events = _getEventsForRange(this._calendarData, weekStart, weekEnd);
+
+    // Header row
+    const header = scroll.createDiv({ cls: "davyjones-cal-week-header" });
+    header.createDiv({ cls: "davyjones-cal-gutter-spacer" }); // spacer for time gutter
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart); d.setDate(d.getDate() + i);
+      const hdr = header.createDiv({ cls: `davyjones-cal-week-day-header${this._isSameDay(d, today) ? " davyjones-cal-today" : ""}` });
+      hdr.createEl("span", { text: `${DAYS_SHORT[d.getDay()]} ${d.getDate()}` });
+    }
+
+    // All-day row
+    const allDayEvents = events.filter(e => e.allDay);
+    if (allDayEvents.length > 0) {
+      const allDayRow = scroll.createDiv({ cls: "davyjones-cal-allday-row" });
+      allDayRow.createDiv({ cls: "davyjones-cal-allday-label", text: "all-day" });
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(weekStart); d.setDate(d.getDate() + i);
+        const ds = new Date(d); ds.setHours(0,0,0,0);
+        const de = new Date(d); de.setHours(23,59,59,999);
+        const cell = allDayRow.createDiv({ cls: "davyjones-cal-allday-cell" });
+        for (const ev of allDayEvents.filter(e => e._start <= de && e._end >= ds)) {
+          const chip = cell.createDiv({ cls: "davyjones-cal-event-chip" });
+          chip.style.background = ev._color;
+          chip.setText(ev.title);
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+            if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+          });
+        }
+      }
+    }
+
+    // Time grid
+    const grid = scroll.createDiv({ cls: "davyjones-cal-time-grid" });
+    const timedEvents = events.filter(e => !e.allDay);
+
+    // Time gutter
+    const gutter = grid.createDiv({ cls: "davyjones-cal-time-gutter" });
+    for (let h = 0; h < 24; h++) {
+      const label = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+      gutter.createDiv({ cls: "davyjones-cal-hour-label", text: label });
+    }
+
+    // Day columns
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart); d.setDate(d.getDate() + i);
+      const col = grid.createDiv({ cls: `davyjones-cal-week-col${this._isSameDay(d, today) ? " davyjones-cal-today-col" : ""}` });
+
+      // Hour slots
+      for (let h = 0; h < 24; h++) {
+        const slot = col.createDiv({ cls: "davyjones-cal-hour-slot" });
+        slot.addEventListener("click", () => {
+          const clickDate = new Date(d);
+          clickDate.setHours(h, 0, 0, 0);
+          new DavyJonesEventModal(this.app, this.plugin, null, clickDate).open();
+        });
+      }
+
+      // Event blocks
+      const ds = new Date(d); ds.setHours(0,0,0,0);
+      const de = new Date(d); de.setHours(23,59,59,999);
+      const dayEvents = timedEvents.filter(e => e._start <= de && e._end >= ds);
+      for (const ev of dayEvents) {
+        const startH = ev._start < ds ? 0 : ev._start.getHours() + ev._start.getMinutes() / 60;
+        const endH = ev._end > de ? 24 : ev._end.getHours() + ev._end.getMinutes() / 60;
+        const top = startH * 60;
+        const height = Math.max((endH - startH) * 60, 18);
+
+        const block = col.createDiv({ cls: `davyjones-cal-event-block${ev.type === "task" ? " is-task" : ""}` });
+        block.style.top = `${top}px`;
+        block.style.height = `${height}px`;
+        block.style.background = ev._color;
+        block.createDiv({ cls: "davyjones-cal-event-block-title", text: ev.title });
+        if (height > 30) block.createDiv({ cls: "davyjones-cal-event-block-time", text: `${_formatTime(ev._start)} – ${_formatTime(ev._end)}` });
+        block.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+          if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+        });
+      }
+
+      // Now line
+      if (this._isSameDay(d, today)) {
+        const nowH = today.getHours() + today.getMinutes() / 60;
+        const nowLine = col.createDiv({ cls: "davyjones-cal-now-line" });
+        nowLine.style.top = `${nowH * 60}px`;
+        nowLine.createDiv({ cls: "davyjones-cal-now-dot" });
+      }
+    }
+  }
+
+  // ── Day View ──
+
+  _renderDay(container) {
+    const scroll = container.createDiv({ cls: "davyjones-cal-week-scroll" });
+    const d = new Date(this._currentDate);
+    d.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+    const today = new Date();
+    const events = _getEventsForRange(this._calendarData, d, dayEnd);
+
+    // Header
+    const header = scroll.createDiv({ cls: "davyjones-cal-day-view-header" });
+    header.createDiv({ cls: "davyjones-cal-gutter-spacer" });
+    const hdr = header.createDiv({ cls: `davyjones-cal-week-day-header${this._isSameDay(d, today) ? " davyjones-cal-today" : ""}` });
+    hdr.createEl("span", { text: `${DAYS_SHORT[d.getDay()]} ${d.getDate()}` });
+
+    // All-day events
+    const allDayEvents = events.filter(e => e.allDay);
+    if (allDayEvents.length > 0) {
+      const allDayRow = scroll.createDiv({ cls: "davyjones-cal-allday-row davyjones-cal-day-allday" });
+      allDayRow.createDiv({ cls: "davyjones-cal-allday-label", text: "all-day" });
+      const cell = allDayRow.createDiv({ cls: "davyjones-cal-allday-cell" });
+      for (const ev of allDayEvents) {
+        const chip = cell.createDiv({ cls: "davyjones-cal-event-chip" });
+        chip.style.background = ev._color;
+        chip.setText(ev.title);
+        chip.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+          if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+        });
+      }
+    }
+
+    // Time grid (single column)
+    const grid = scroll.createDiv({ cls: "davyjones-cal-day-grid" });
+    const timedEvents = events.filter(e => !e.allDay);
+
+    const gutter = grid.createDiv({ cls: "davyjones-cal-time-gutter" });
+    for (let h = 0; h < 24; h++) {
+      const label = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+      gutter.createDiv({ cls: "davyjones-cal-hour-label", text: label });
+    }
+
+    const col = grid.createDiv({ cls: `davyjones-cal-week-col${this._isSameDay(d, today) ? " davyjones-cal-today-col" : ""}` });
+
+    for (let h = 0; h < 24; h++) {
+      const slot = col.createDiv({ cls: "davyjones-cal-hour-slot" });
+      slot.addEventListener("click", () => {
+        const clickDate = new Date(d);
+        clickDate.setHours(h, 0, 0, 0);
+        new DavyJonesEventModal(this.app, this.plugin, null, clickDate).open();
+      });
+    }
+
+    for (const ev of timedEvents) {
+      const startH = ev._start.getHours() + ev._start.getMinutes() / 60;
+      const endH = ev._end.getHours() + ev._end.getMinutes() / 60;
+      const top = startH * 60;
+      const height = Math.max((endH - startH) * 60, 18);
+
+      const block = col.createDiv({ cls: `davyjones-cal-event-block${ev.type === "task" ? " is-task" : ""}` });
+      block.style.top = `${top}px`;
+      block.style.height = `${height}px`;
+      block.style.background = ev._color;
+      block.createDiv({ cls: "davyjones-cal-event-block-title", text: ev.title });
+      if (height > 30) block.createDiv({ cls: "davyjones-cal-event-block-time", text: `${_formatTime(ev._start)} – ${_formatTime(ev._end)}` });
+      block.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const original = (this._calendarData.events || []).find(x => x.id === ev.id);
+        if (original) new DavyJonesEventModal(this.app, this.plugin, original).open();
+      });
+    }
+
+    if (this._isSameDay(d, today)) {
+      const nowH = today.getHours() + today.getMinutes() / 60;
+      const nowLine = col.createDiv({ cls: "davyjones-cal-now-line" });
+      nowLine.style.top = `${nowH * 60}px`;
+      nowLine.createDiv({ cls: "davyjones-cal-now-dot" });
+    }
+  }
+}
+
+// ─── Event Modal ──────────────────────────────────────────────
+
+class DavyJonesEventModal extends Modal {
+  constructor(app, plugin, existingEvent = null, defaultDate = null) {
+    super(app);
+    this.plugin = plugin;
+    this._event = existingEvent;
+    this._isEdit = !!existingEvent;
+
+    const now = defaultDate || new Date();
+    const defStart = existingEvent?.start || this._toLocalISO(now);
+    const defEndDate = new Date(now); defEndDate.setHours(defEndDate.getHours() + 1);
+    const defEnd = existingEvent?.end || this._toLocalISO(defEndDate);
+
+    this._title = existingEvent?.title || "";
+    this._description = existingEvent?.description || "";
+    this._start = defStart;
+    this._end = defEnd;
+    this._allDay = existingEvent?.allDay || false;
+    this._color = existingEvent?.color || null;
+    this._type = existingEvent?.type || "event";
+    this._calendarId = existingEvent?.calendarId || "default";
+    this._recurrence = existingEvent?.recurrence ? { ...existingEvent.recurrence } : null;
+    this._task = existingEvent?.task ? { ...existingEvent.task } : { agentDescription: "", scopeFiles: [], maxTurns: 20 };
+  }
+
+  _toLocalISO(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  _toDateOnly(str) {
+    return str ? str.slice(0, 10) : "";
+  }
+
+  _generateId() {
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    return "evt-" + Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("davyjones-event-modal");
+    this._renderForm();
+  }
+
+  onClose() { this.contentEl.empty(); }
+
+  _renderForm() {
+    const el = this.contentEl;
+    el.empty();
+
+    el.createEl("h2", { text: this._isEdit ? "Edit Event" : "New Event" });
+
+    // Title
+    const titleInput = el.createEl("input", { type: "text", cls: "davyjones-em-input", placeholder: "Event title..." });
+    titleInput.value = this._title;
+    titleInput.addEventListener("input", () => { this._title = titleInput.value; });
+
+    // All-day toggle + date/time
+    const dateSection = el.createDiv({ cls: "davyjones-em-date-section" });
+
+    new Setting(dateSection).setName("All day").addToggle((t) => {
+      t.setValue(this._allDay).onChange((v) => { this._allDay = v; this._renderForm(); });
+    });
+
+    if (this._allDay) {
+      const startDate = dateSection.createEl("input", { type: "date", cls: "davyjones-em-date-input" });
+      startDate.value = this._toDateOnly(this._start);
+      startDate.addEventListener("change", () => { this._start = startDate.value; });
+
+      dateSection.createEl("span", { text: "to", cls: "davyjones-em-date-sep" });
+
+      const endDate = dateSection.createEl("input", { type: "date", cls: "davyjones-em-date-input" });
+      endDate.value = this._toDateOnly(this._end);
+      endDate.addEventListener("change", () => { this._end = endDate.value; });
+    } else {
+      const startInput = dateSection.createEl("input", { type: "datetime-local", cls: "davyjones-em-date-input" });
+      startInput.value = this._start.slice(0, 16);
+      startInput.addEventListener("change", () => { this._start = startInput.value; });
+
+      dateSection.createEl("span", { text: "to", cls: "davyjones-em-date-sep" });
+
+      const endInput = dateSection.createEl("input", { type: "datetime-local", cls: "davyjones-em-date-input" });
+      endInput.value = this._end.slice(0, 16);
+      endInput.addEventListener("change", () => { this._end = endInput.value; });
+    }
+
+    // Color picker
+    const colorSection = el.createDiv({ cls: "davyjones-em-color-picker" });
+    colorSection.createEl("span", { text: "Color:", cls: "davyjones-em-color-label" });
+    // "default" swatch
+    const defSwatch = colorSection.createDiv({ cls: `davyjones-em-color-swatch${this._color === null ? " is-selected" : ""}` });
+    defSwatch.style.background = "var(--background-modifier-border)";
+    defSwatch.title = "Calendar default";
+    defSwatch.addEventListener("click", () => { this._color = null; this._renderForm(); });
+    for (const c of CAL_COLORS) {
+      const swatch = colorSection.createDiv({ cls: `davyjones-em-color-swatch${this._color === c ? " is-selected" : ""}` });
+      swatch.style.background = c;
+      swatch.addEventListener("click", () => { this._color = c; this._renderForm(); });
+    }
+
+    // Description
+    el.createEl("label", { text: "Description", cls: "davyjones-tm-label" });
+    const descArea = el.createEl("textarea", { cls: "davyjones-tm-textarea" });
+    descArea.value = this._description;
+    descArea.rows = 3;
+    descArea.addEventListener("input", () => { this._description = descArea.value; });
+
+    // Recurrence
+    const recSection = el.createDiv({ cls: "davyjones-em-recurrence-section" });
+    new Setting(recSection).setName("Repeat").addDropdown((d) => {
+      d.addOption("none", "None").addOption("daily", "Daily").addOption("weekly", "Weekly")
+        .addOption("monthly", "Monthly").addOption("yearly", "Yearly")
+        .setValue(this._recurrence?.freq || "none")
+        .onChange((v) => {
+          if (v === "none") { this._recurrence = null; } else {
+            this._recurrence = { freq: v, interval: this._recurrence?.interval || 1, byDay: this._recurrence?.byDay || [], until: null, count: null };
+          }
+          this._renderForm();
+        });
+    });
+
+    if (this._recurrence) {
+      const recDetail = recSection.createDiv({ cls: "davyjones-em-rec-detail" });
+      new Setting(recDetail).setName("Every").addText((t) => {
+        t.setValue(String(this._recurrence.interval || 1)).onChange((v) => { this._recurrence.interval = parseInt(v, 10) || 1; });
+        t.inputEl.type = "number"; t.inputEl.style.width = "60px";
+      });
+
+      if (this._recurrence.freq === "weekly") {
+        const dayRow = recDetail.createDiv({ cls: "davyjones-em-rec-days" });
+        const dayNames = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+        const labels = ["S", "M", "T", "W", "T", "F", "S"];
+        for (let i = 0; i < 7; i++) {
+          const isOn = (this._recurrence.byDay || []).includes(dayNames[i]);
+          const dayBtn = dayRow.createEl("button", { cls: `davyjones-em-rec-day-btn${isOn ? " is-active" : ""}`, text: labels[i] });
+          dayBtn.addEventListener("click", () => {
+            if (!this._recurrence.byDay) this._recurrence.byDay = [];
+            const idx = this._recurrence.byDay.indexOf(dayNames[i]);
+            if (idx >= 0) this._recurrence.byDay.splice(idx, 1);
+            else this._recurrence.byDay.push(dayNames[i]);
+            this._renderForm();
+          });
+        }
+      }
+    }
+
+    // Schedule as Agent Task
+    const taskSection = el.createDiv({ cls: "davyjones-em-task-toggle" });
+    new Setting(taskSection).setName("Schedule as Agent Task")
+      .setDesc("DavyJones will dispatch this event as an agent task at the scheduled time.")
+      .addToggle((t) => {
+        t.setValue(this._type === "task").onChange((v) => {
+          this._type = v ? "task" : "event";
+          this._renderForm();
+        });
+      });
+
+    if (this._type === "task") {
+      const taskConfig = el.createDiv({ cls: "davyjones-em-task-section" });
+      taskConfig.createEl("label", { text: "Agent Prompt", cls: "davyjones-tm-label" });
+      const agentDesc = taskConfig.createEl("textarea", { cls: "davyjones-tm-textarea" });
+      agentDesc.value = this._task.agentDescription || "";
+      agentDesc.rows = 4;
+      agentDesc.placeholder = "Describe what the agent should do...";
+      agentDesc.addEventListener("input", () => { this._task.agentDescription = agentDesc.value; });
+
+      new Setting(taskConfig).setName("Max Turns").addText((t) => {
+        t.setValue(String(this._task.maxTurns || 20)).onChange((v) => { this._task.maxTurns = parseInt(v, 10) || 20; });
+        t.inputEl.type = "number"; t.inputEl.style.width = "70px";
+      });
+
+      // Dispatch history (edit mode only)
+      if (this._isEdit && this._event?.task) {
+        const historyEl = taskConfig.createDiv({ cls: "davyjones-em-dispatch-history" });
+        const lastRun = this._event.task.lastDispatchedAt;
+        const lastStatus = this._event.task.lastStatus;
+        const lastError = this._event.task.lastError;
+        const instances = this._event.task.dispatchedInstances || [];
+
+        if (lastRun) {
+          const ago = this._timeAgo(new Date(lastRun));
+          const statusText = lastStatus === "completed" ? "✓ Completed" : lastStatus === "failed" ? "✗ Failed" : "⟳ Running";
+          const statusCls = lastStatus === "completed" ? "is-completed" : lastStatus === "failed" ? "is-failed" : "is-running";
+          historyEl.createDiv({ cls: `davyjones-em-dispatch-status ${statusCls}`, text: `Last run: ${statusText} (${ago})` });
+          if (lastError) {
+            historyEl.createDiv({ cls: "davyjones-em-dispatch-error", text: lastError });
+          }
+        }
+        if (instances.length > 0) {
+          historyEl.createDiv({ cls: "davyjones-em-dispatch-count", text: `${instances.length} dispatch${instances.length !== 1 ? "es" : ""} total` });
+        }
+      }
+    }
+
+    // Footer
+    const footer = el.createDiv({ cls: "davyjones-mcp-modal-actions" });
+    if (this._isEdit) {
+      const delBtn = footer.createEl("button", { cls: "davyjones-em-delete-btn", text: "Delete" });
+      delBtn.addEventListener("click", () => this._delete());
+    }
+    const saveBtn = footer.createEl("button", { cls: "davyjones-mcp-modal-save", text: "Save" });
+    saveBtn.addEventListener("click", () => this._save());
+    const cancelBtn = footer.createEl("button", { cls: "davyjones-mcp-modal-cancel", text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+  }
+
+  _save() {
+    if (!this._title.trim()) { new Notice("Title is required."); return; }
+    if (!this._start) { new Notice("Start date is required."); return; }
+
+    const calData = this.plugin._readCalendar();
+    const built = this._buildEvent(this._isEdit ? this._event.id : this._generateId());
+
+    if (this._isEdit) {
+      const idx = calData.events.findIndex(e => e.id === this._event.id);
+      if (idx >= 0) calData.events[idx] = built;
+      else calData.events.push(built);
+    } else {
+      calData.events.push(built);
+    }
+
+    this.plugin._writeCalendar(calData);
+    this.close();
+    this._refreshCalendarViews();
+  }
+
+  _delete() {
+    const calData = this.plugin._readCalendar();
+    calData.events = calData.events.filter(e => e.id !== this._event.id);
+    this.plugin._writeCalendar(calData);
+    this.close();
+    this._refreshCalendarViews();
+  }
+
+  _refreshCalendarViews() {
+    for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
+      if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+    }
+  }
+
+  _timeAgo(date) {
+    const secs = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (secs < 60) return "just now";
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
+  }
+
+  _buildEvent(id) {
+    return {
+      id,
+      calendarId: this._calendarId,
+      title: this._title.trim(),
+      description: this._description,
+      start: this._start,
+      end: this._end || this._start,
+      allDay: this._allDay,
+      color: this._color,
+      type: this._type,
+      recurrence: this._recurrence,
+      task: this._type === "task" ? {
+        agentDescription: this._task.agentDescription,
+        scopeFiles: this._task.scopeFiles || [],
+        maxTurns: this._task.maxTurns || 20,
+        lastDispatchedAt: this._event?.task?.lastDispatchedAt || null,
+        dispatchedInstances: this._event?.task?.dispatchedInstances || [],
+      } : null,
+    };
+  }
+}
+
+// ─── ICS Import Modal ─────────────────────────────────────────
+
+class DavyJonesICSImportModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this._parsedEvents = [];
+    this._calendarName = "";
+    this._calendarColor = "#0891b2";
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("davyjones-ics-modal");
+    contentEl.createEl("h2", { text: "Import .ics Calendar" });
+
+    const fileInput = contentEl.createEl("input", { type: "file", attr: { accept: ".ics,.ical" } });
+    fileInput.style.display = "none";
+    const selectBtn = contentEl.createEl("button", { cls: "davyjones-cal-new-btn", text: "Select .ics File" });
+    selectBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => { if (fileInput.files[0]) this._handleFile(fileInput.files[0]); });
+
+    const dropZone = contentEl.createDiv({ cls: "davyjones-ics-dropzone" });
+    dropZone.createEl("span", { text: "or drag & drop .ics file here" });
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.addClass("is-dragover"); });
+    dropZone.addEventListener("dragleave", () => dropZone.removeClass("is-dragover"));
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault(); dropZone.removeClass("is-dragover");
+      if (e.dataTransfer.files.length) this._handleFile(e.dataTransfer.files[0]);
+    });
+
+    this._previewEl = contentEl.createDiv({ cls: "davyjones-ics-preview" });
+  }
+
+  onClose() { this.contentEl.empty(); }
+
+  async _handleFile(file) {
+    const text = await file.text();
+    this._calendarName = file.name.replace(/\.(ics|ical)$/i, "");
+    this._parsedEvents = this._parseICS(text);
+    this._renderPreview();
+  }
+
+  _parseICS(text) {
+    // Unfold continuation lines
+    const unfolded = text.replace(/\r\n[ \t]/g, "").replace(/\r/g, "");
+    const lines = unfolded.split("\n");
+    const events = [];
+    let current = null;
+
+    for (const line of lines) {
+      if (line === "BEGIN:VEVENT") { current = {}; continue; }
+      if (line === "END:VEVENT" && current) {
+        if (current.title && current.start) {
+          const bytes = new Uint8Array(4); crypto.getRandomValues(bytes);
+          events.push({
+            id: "evt-" + Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(""),
+            calendarId: "", // filled on import
+            title: current.title,
+            description: current.description || "",
+            start: current.start,
+            end: current.end || current.start,
+            allDay: current.allDay || false,
+            color: null,
+            type: "event",
+            recurrence: current.recurrence || null,
+            task: null,
+          });
+        }
+        current = null;
+        continue;
+      }
+      if (!current) continue;
+
+      const colonIdx = line.indexOf(":");
+      if (colonIdx < 0) continue;
+      const key = line.slice(0, colonIdx);
+      const value = line.slice(colonIdx + 1).trim();
+      const baseProp = key.split(";")[0];
+
+      if (baseProp === "SUMMARY") current.title = value;
+      else if (baseProp === "DESCRIPTION") current.description = value.replace(/\\n/g, "\n").replace(/\\,/g, ",");
+      else if (baseProp === "DTSTART") {
+        const { dt, allDay } = this._parseICSDate(key, value);
+        current.start = dt; current.allDay = allDay;
+      } else if (baseProp === "DTEND") {
+        const { dt } = this._parseICSDate(key, value);
+        current.end = dt;
+      } else if (baseProp === "RRULE") {
+        current.recurrence = this._parseRRule(value);
+      }
+    }
+    return events;
+  }
+
+  _parseICSDate(key, value) {
+    const isDateOnly = key.includes("VALUE=DATE") || value.length === 8;
+    if (isDateOnly) {
+      const y = value.slice(0, 4), m = value.slice(4, 6), d = value.slice(6, 8);
+      return { dt: `${y}-${m}-${d}`, allDay: true };
+    }
+    // YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
+    const clean = value.replace("Z", "");
+    const y = clean.slice(0, 4), mo = clean.slice(4, 6), d = clean.slice(6, 8);
+    const h = clean.slice(9, 11), mi = clean.slice(11, 13);
+    return { dt: `${y}-${mo}-${d}T${h}:${mi}`, allDay: false };
+  }
+
+  _parseRRule(value) {
+    const parts = {};
+    for (const pair of value.split(";")) {
+      const [k, v] = pair.split("=");
+      parts[k] = v;
+    }
+    const rec = { freq: (parts.FREQ || "daily").toLowerCase(), interval: parseInt(parts.INTERVAL || "1", 10), byDay: [], until: null, count: null };
+    if (parts.BYDAY) rec.byDay = parts.BYDAY.split(",");
+    if (parts.UNTIL) {
+      const u = parts.UNTIL.replace("Z", "");
+      rec.until = `${u.slice(0,4)}-${u.slice(4,6)}-${u.slice(6,8)}`;
+    }
+    if (parts.COUNT) rec.count = parseInt(parts.COUNT, 10);
+    return rec;
+  }
+
+  _renderPreview() {
+    const el = this._previewEl;
+    el.empty();
+
+    if (this._parsedEvents.length === 0) {
+      el.createEl("p", { text: "No events found in file.", cls: "davyjones-cal-detail-empty" });
+      return;
+    }
+
+    // Calendar name
+    new Setting(el).setName("Calendar Name").addText((t) => {
+      t.setValue(this._calendarName).onChange((v) => { this._calendarName = v; });
+    });
+
+    // Color
+    const colorRow = el.createDiv({ cls: "davyjones-em-color-picker" });
+    colorRow.createEl("span", { text: "Color:", cls: "davyjones-em-color-label" });
+    for (const c of CAL_COLORS) {
+      const swatch = colorRow.createDiv({ cls: `davyjones-em-color-swatch${this._calendarColor === c ? " is-selected" : ""}` });
+      swatch.style.background = c;
+      swatch.addEventListener("click", () => { this._calendarColor = c; this._renderPreview(); });
+    }
+
+    el.createEl("p", { cls: "davyjones-ics-count", text: `${this._parsedEvents.length} events found` });
+
+    // Preview list
+    const list = el.createDiv({ cls: "davyjones-ics-preview-list" });
+    for (const evt of this._parsedEvents.slice(0, 50)) {
+      const row = list.createDiv({ cls: "davyjones-ics-preview-item" });
+      row.createEl("span", { cls: "davyjones-ics-preview-date", text: evt.start.slice(0, 10) });
+      row.createEl("span", { cls: "davyjones-ics-preview-title", text: evt.title });
+    }
+    if (this._parsedEvents.length > 50) {
+      list.createEl("p", { cls: "davyjones-cal-detail-empty", text: `...and ${this._parsedEvents.length - 50} more` });
+    }
+
+    // Import button
+    const importBtn = el.createEl("button", { cls: "davyjones-cal-new-btn", text: `Import ${this._parsedEvents.length} events` });
+    importBtn.style.marginTop = "12px";
+    importBtn.addEventListener("click", () => this._import());
+  }
+
+  _import() {
+    const calData = this.plugin._readCalendar();
+    const bytes = new Uint8Array(4); crypto.getRandomValues(bytes);
+    const calId = "imported-" + Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    calData.calendars.push({
+      id: calId,
+      name: this._calendarName || "Imported",
+      color: this._calendarColor,
+      source: "ics",
+      importedAt: new Date().toISOString(),
+    });
+
+    for (const evt of this._parsedEvents) {
+      evt.calendarId = calId;
+      calData.events.push(evt);
+    }
+
+    this.plugin._writeCalendar(calData);
+    this.close();
+    new Notice(`Imported ${this._parsedEvents.length} events into "${this._calendarName}"`);
+
+    for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
+      if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+    }
   }
 }
 

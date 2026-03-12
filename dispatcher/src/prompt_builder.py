@@ -40,6 +40,7 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
             "- Do NOT modify, write to, or delete the task file — results are aggregated automatically.",
             f"- IMPORTANT: The file `{payload.task_file_path}` is managed by the dispatcher. Do not touch it.",
             heading_rule,
+            "- If you need context about previous agent work, query: curl -s $DAVYJONES_API_URL/api/reports",
         ])
     else:
         parts.extend([

@@ -12,6 +12,7 @@ from src.config import (
     AGENT_TIMEOUT_SECONDS,
     CREDS_HOST_PATH,
     DOCKER_NETWORK,
+    HTTP_PORT,
     VAULT_HOST_PATH,
 )
 from src.models import DispatchPayload, TaskResult
@@ -102,6 +103,9 @@ def run_raw(
         mcp_instances = get_instance_urls()
         if mcp_instances:
             environment["DAVYJONES_MCP_INSTANCES"] = json.dumps(mcp_instances)
+
+        # Expose dispatcher API so agents can query execution reports
+        environment["DAVYJONES_API_URL"] = f"http://davyjones-dispatcher:{HTTP_PORT}"
 
         volumes = {
             VAULT_HOST_PATH: {"bind": "/vault", "mode": "rw"},

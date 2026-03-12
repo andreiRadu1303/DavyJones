@@ -281,6 +281,13 @@ def main() -> None:
     except Exception:
         logger.exception("Failed to sync MCP instances")
 
+    # Start calendar scheduler for dispatching task-type events
+    try:
+        from src.calendar_scheduler import start as calendar_start
+        calendar_start(auto_commit_fn=_auto_commit)
+    except Exception:
+        logger.exception("Failed to start Calendar scheduler")
+
     logger.info("Dispatcher ready. Polling for changes (overseer mode)...")
 
     heartbeat_path = os.path.join(VAULT_PATH, ".davyjones")

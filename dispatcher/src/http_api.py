@@ -6,6 +6,7 @@ Exposes POST /api/task for submitting tasks and GET /api/task/<id> for status.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -76,6 +77,8 @@ def _execute_direct_task(
     description: str,
     scope_files: list[str],
     auto_commit_fn,
+    source: str = "direct",
+    source_detail: dict | None = None,
 ) -> None:
     """Background thread: resolve context, run overseer, execute plan."""
     try:
@@ -152,8 +155,8 @@ def _execute_direct_task(
             scribe_enqueue(ScribeJob(
                 plan=plan,
                 results=results,
-                source="direct",
-                source_detail={"task_id": task.id},
+                source=source,
+                source_detail=source_detail or {"task_id": task.id},
                 description=description[:200],
                 duration_seconds=duration,
             ))
@@ -238,6 +241,69 @@ def create_app(auto_commit_fn) -> Flask:
         if not report:
             return jsonify({"error": "not found"}), 404
         return jsonify(report)
+
+    @app.route("/api/calendar", methods=["GET"])
+    def get_calendar():
+        cal_path = os.path.join(VAULT_PATH, ".davyjones-calendar.json")
+        try:
+            with open(cal_path, "r") as f:
+                data = json.load(f)
+            return jsonify(data)
+        except FileNotFoundError:
+            return jsonify({"version": 1, "calendars": [], "events": []})
+        except json.JSONDecodeError:
+            return jsonify({"error": "invalid calendar file"}), 500
+
+    @app.route("/api/calendar/event", methods=["POST"])
+    def create_calendar_event():
+        data = request.get_json(silent=True) or {}
+        title = data.get("title", "").strip()
+        if not title:
+            return jsonify({"error": "title is required"}), 400
+
+        start = data.get("start", "")
+        if not start:
+            return jsonify({"error": "start is required"}), 400
+
+        # Generate unique ID
+        event_id = "evt-" + uuid.uuid4().hex[:8]
+        end = data.get("end", start)
+        all_day = data.get("allDay", False)
+        event_type = data.get("type", "event")
+        task_config = data.get("task", None)
+
+        event = {
+            "id": event_id,
+            "calendarId": data.get("calendarId", "default"),
+            "title": title,
+            "description": data.get("description", ""),
+            "start": start,
+            "end": end,
+            "allDay": all_day,
+            "color": data.get("color", None),
+            "type": event_type,
+            "recurrence": data.get("recurrence", None),
+            "task": task_config,
+        }
+
+        cal_path = os.path.join(VAULT_PATH, ".davyjones-calendar.json")
+        try:
+            with open(cal_path, "r") as f:
+                cal_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            cal_data = {
+                "version": 1,
+                "calendars": [{"id": "default", "name": "Default", "color": "#7c3aed", "source": "local"}],
+                "events": [],
+            }
+
+        cal_data.setdefault("events", []).append(event)
+
+        with open(cal_path, "w") as f:
+            json.dump(cal_data, f, indent=2)
+
+        logger.info("Calendar event created via API: %s (%s)", event_id, title)
+        return jsonify({"event_id": event_id, "status": "created"}), 201
 
     @app.route("/api/health", methods=["GET"])
     def health():
