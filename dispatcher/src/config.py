@@ -26,6 +26,9 @@ SLACK_MCP_ENABLED = os.environ.get("SLACK_MCP_ENABLED", "true").lower() != "fals
 GITHUB_MCP_ENABLED = os.environ.get("GITHUB_MCP_ENABLED", "true").lower() != "false"
 GITLAB_MCP_ENABLED = os.environ.get("GITLAB_MCP_ENABLED", "true").lower() != "false"
 
+# HTTP API for direct task submission
+HTTP_PORT = int(os.environ.get("HTTP_PORT", "5555"))
+
 # Docker container spawning
 VAULT_HOST_PATH = os.environ.get("VAULT_HOST_PATH", "")
 CREDS_HOST_PATH = os.environ.get("CREDS_HOST_PATH", "")

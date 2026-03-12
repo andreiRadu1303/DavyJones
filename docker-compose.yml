@@ -32,6 +32,9 @@ services:
       - SLACK_MCP_ENABLED=${SLACK_MCP_ENABLED:-true}
       - GITHUB_MCP_ENABLED=${GITHUB_MCP_ENABLED:-true}
       - GITLAB_MCP_ENABLED=${GITLAB_MCP_ENABLED:-true}
+      - HTTP_PORT=${HTTP_PORT:-5555}
+    ports:
+      - "${HTTP_PORT:-5555}:5555"
     depends_on:
       - obsidian-mcp
     restart: unless-stopped

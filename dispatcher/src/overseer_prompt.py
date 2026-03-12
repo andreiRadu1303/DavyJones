@@ -1,7 +1,10 @@
-"""Build the prompt for the overseer agent container.
+"""Build prompts for the overseer agent container.
 
-The overseer receives information about what changed in a commit and decides
-whether any work needs to be done. It returns a structured JSON plan.
+Supports two modes:
+1. Commit-based: analyze a git commit and decide what work is needed.
+2. Direct task: user submitted a task explicitly from the Obsidian plugin.
+
+Both share the same JSON schema, decomposition rules, and vault rules.
 """
 
 from __future__ import annotations
@@ -17,13 +20,12 @@ class CommitData:
     diff_text: str  # unified diff of .md file changes
 
 
-def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
-    """Build the full prompt for the overseer container."""
-    parts = [
-        "You are the DavyJones overseer agent. Your job is to analyze a git commit",
-        "in an Obsidian vault, decide what work needs to be done, and DECOMPOSE",
-        "each job into focused sub-tasks that run as separate agent containers.",
-        "",
+# ─── Shared prompt sections ────────────────────────────────────
+
+
+def _json_schema_block() -> list[str]:
+    """The JSON plan schema all overseer prompts share."""
+    return [
         "You MUST respond with ONLY a JSON object (no explanation, no markdown",
         'fences, no extra text). The JSON must have this exact structure:',
         "",
@@ -40,6 +42,12 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         '  ]',
         '}',
         "",
+    ]
+
+
+def _decomposition_rules() -> list[str]:
+    """Job decomposition rules shared by all overseer modes."""
+    return [
         "## Job Decomposition Rules",
         "",
         "Each pending task/job file is a JOB. Decompose each job into multiple sub-tasks:",
@@ -86,19 +94,12 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         "- Each task prompt MUST include the full instructions for what to do to each file",
         "- If there's a template/pattern to follow, include it in EVERY task prompt (they're independent)",
         "",
-        "## When NOT to decompose",
-        "",
-        "- If no work is needed, return {\"tasks\": []}",
-        "- Context-only changes (_context.md, folder restructuring) → no tasks",
-        "- Minor edits (typo fixes, formatting) → no tasks",
-        "- A trivial single-step task (e.g., 'post one message') → 1 task is fine",
-        "",
-        "## What triggers work",
-        "",
-        '- Files with frontmatter `type: task` or `type: job` → decompose and process',
-        '  (if `status` is missing, treat it as pending; skip only if `status: completed` or `status: cancelled`)',
-        "- New or substantially changed notes requesting work → create tasks",
-        "",
+    ]
+
+
+def _examples_block() -> list[str]:
+    """Example decompositions shared by all overseer modes."""
+    return [
         "## Example decomposition",
         "",
         "### External service work (sequential dependencies)",
@@ -130,6 +131,12 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         '  t2: "Read vault project notes for context" (max_turns: 25)',
         '  t3: "Post a project status summary to #general" (max_turns: 30, depends_on: ["t1","t2"])',
         "",
+    ]
+
+
+def _task_prompt_rules() -> list[str]:
+    """Rules that the overseer should embed in every sub-task prompt."""
+    return [
         "## Important rules for task prompts",
         "",
         "Include these rules in EVERY sub-task prompt that modifies vault notes:",
@@ -138,6 +145,12 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         "  filename as the note's title. Starting content with a duplicate heading looks broken.",
         "- Preserve existing YAML frontmatter — update fields but don't remove the block.",
         "",
+    ]
+
+
+def _context_format_block() -> list[str]:
+    """Describes the context section format."""
+    return [
         "## Context format",
         "",
         "- Each file shows its full text, ancestor file paths, and sibling file paths",
@@ -145,55 +158,100 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         "",
     ]
 
-    # Vault-specific rules
-    if vault_rules:
-        custom = vault_rules.get("customInstructions", "")
-        if custom:
-            parts.extend([
-                "## Custom Instructions (from vault owner)",
-                "",
-                custom,
-                "",
-            ])
 
-        ignore_patterns = vault_rules.get("ignorePatterns", [])
-        if ignore_patterns:
-            parts.extend([
-                "## File Ignore Patterns",
-                "",
-                "Skip these files/patterns — do not create tasks for them:",
-                "",
-            ])
-            for pattern in ignore_patterns:
-                parts.append(f"- `{pattern}`")
-            parts.append("")
+def _vault_rules_block(vault_rules: dict | None) -> list[str]:
+    """Vault-specific rules injection (custom instructions, ignore patterns, etc.)."""
+    if not vault_rules:
+        return []
 
-        ops = vault_rules.get("allowedOperations", {})
-        restrictions = []
-        if not ops.get("createFiles", True):
-            restrictions.append("Do NOT create new files")
-        if not ops.get("deleteFiles", True):
-            restrictions.append("Do NOT delete files")
-        if not ops.get("modifyFiles", True):
-            restrictions.append("Do NOT modify existing files (read-only)")
-        if not ops.get("runGitCommands", True):
-            restrictions.append("Do NOT run git commands")
-        if restrictions:
-            parts.extend([
-                "## Operation Restrictions",
-                "",
-                "The vault owner has restricted the following operations:",
-                "",
-            ])
-            for r in restrictions:
-                parts.append(f"- {r}")
-            parts.append("")
+    parts: list[str] = []
 
-        verbosity = vault_rules.get("verbosity", "normal")
-        if verbosity == "concise":
-            parts.extend(["When setting task prompts, instruct agents to be concise and minimal.", ""])
-        elif verbosity == "detailed":
-            parts.extend(["When setting task prompts, instruct agents to be thorough and detailed.", ""])
+    custom = vault_rules.get("customInstructions", "")
+    if custom:
+        parts.extend([
+            "## Custom Instructions (from vault owner)",
+            "",
+            custom,
+            "",
+        ])
+
+    ignore_patterns = vault_rules.get("ignorePatterns", [])
+    if ignore_patterns:
+        parts.extend([
+            "## File Ignore Patterns",
+            "",
+            "Skip these files/patterns — do not create tasks for them:",
+            "",
+        ])
+        for pattern in ignore_patterns:
+            parts.append(f"- `{pattern}`")
+        parts.append("")
+
+    ops = vault_rules.get("allowedOperations", {})
+    restrictions = []
+    if not ops.get("createFiles", True):
+        restrictions.append("Do NOT create new files")
+    if not ops.get("deleteFiles", True):
+        restrictions.append("Do NOT delete files")
+    if not ops.get("modifyFiles", True):
+        restrictions.append("Do NOT modify existing files (read-only)")
+    if not ops.get("runGitCommands", True):
+        restrictions.append("Do NOT run git commands")
+    if restrictions:
+        parts.extend([
+            "## Operation Restrictions",
+            "",
+            "The vault owner has restricted the following operations:",
+            "",
+        ])
+        for r in restrictions:
+            parts.append(f"- {r}")
+        parts.append("")
+
+    verbosity = vault_rules.get("verbosity", "normal")
+    if verbosity == "concise":
+        parts.extend(["When setting task prompts, instruct agents to be concise and minimal.", ""])
+    elif verbosity == "detailed":
+        parts.extend(["When setting task prompts, instruct agents to be thorough and detailed.", ""])
+
+    return parts
+
+
+# ─── Commit-based prompt ───────────────────────────────────────
+
+
+def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
+    """Build the full prompt for the commit-based overseer container."""
+    parts = [
+        "You are the DavyJones overseer agent. Your job is to analyze a git commit",
+        "in an Obsidian vault, decide what work needs to be done, and DECOMPOSE",
+        "each job into focused sub-tasks that run as separate agent containers.",
+        "",
+    ]
+
+    parts.extend(_json_schema_block())
+    parts.extend(_decomposition_rules())
+
+    parts.extend([
+        "## When NOT to decompose",
+        "",
+        "- If no work is needed, return {\"tasks\": []}",
+        "- Context-only changes (_context.md, folder restructuring) → no tasks",
+        "- Minor edits (typo fixes, formatting) → no tasks",
+        "- A trivial single-step task (e.g., 'post one message') → 1 task is fine",
+        "",
+        "## What triggers work",
+        "",
+        '- Files with frontmatter `type: task` or `type: job` → decompose and process',
+        '  (if `status` is missing, treat it as pending; skip only if `status: completed` or `status: cancelled`)',
+        "- New or substantially changed notes requesting work → create tasks",
+        "",
+    ])
+
+    parts.extend(_examples_block())
+    parts.extend(_task_prompt_rules())
+    parts.extend(_context_format_block())
+    parts.extend(_vault_rules_block(vault_rules))
 
     # Changed files summary
     parts.extend([
@@ -202,8 +260,8 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         f"The following {len(commit_data.changed_files)} file(s) were changed in this commit:",
         "",
     ])
-    for path in commit_data.changed_files:
-        parts.append(f"- `{path}`")
+    for fpath in commit_data.changed_files:
+        parts.append(f"- `{fpath}`")
     parts.append("")
 
     # Context (accumulated from resolve_batch)
@@ -230,6 +288,91 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         "## Your Response",
         "",
         "Analyze the above changes and respond with ONLY the JSON plan object.",
+    ])
+
+    return "\n".join(parts)
+
+
+# ─── Direct-task prompt ────────────────────────────────────────
+
+
+def build_direct_task(
+    description: str,
+    scope_files: list[str],
+    scope_context: str,
+    vault_rules: dict | None = None,
+) -> str:
+    """Build the overseer prompt for a direct user task (no commit/diff).
+
+    Used when the user submits a task from the Obsidian plugin modal,
+    bypassing the commit-based workflow.
+    """
+    parts = [
+        "You are the DavyJones overseer agent. A user has submitted a direct task",
+        "from the Obsidian plugin. Your job is to analyze the request and DECOMPOSE",
+        "it into focused sub-tasks that run as separate agent containers.",
+        "",
+        "The user explicitly asked for this work — do NOT return an empty plan",
+        "unless the request is truly nonsensical.",
+        "",
+    ]
+
+    parts.extend(_json_schema_block())
+    parts.extend(_decomposition_rules())
+
+    parts.extend([
+        "## When NOT to decompose",
+        "",
+        "- A trivial single-step task (e.g., 'post one message') → 1 task is fine",
+        "- If the user's request is unclear, create a single task that interprets and executes it",
+        "",
+    ])
+
+    parts.extend(_examples_block())
+    parts.extend(_task_prompt_rules())
+    parts.extend(_context_format_block())
+    parts.extend(_vault_rules_block(vault_rules))
+
+    # User task description
+    parts.extend([
+        "## User Task",
+        "",
+        description,
+        "",
+    ])
+
+    # Scope files
+    if scope_files:
+        parts.extend([
+            "## Scope Files",
+            "",
+            f"The user selected {len(scope_files)} file(s) for this task:",
+            "",
+        ])
+        for fpath in scope_files:
+            parts.append(f"- `{fpath}`")
+        parts.append("")
+
+        # For direct tasks, set file_path to a placeholder since there's no task note
+        parts.extend([
+            'For all sub-tasks, set `"file_path"` to `".davyjones-direct-task"` since',
+            "there is no task note file for this direct submission.",
+            "",
+        ])
+
+    # Context
+    if scope_context:
+        parts.extend([
+            "## Context",
+            "",
+            scope_context,
+            "",
+        ])
+
+    parts.extend([
+        "## Your Response",
+        "",
+        "Analyze the user's task and respond with ONLY the JSON plan object.",
     ])
 
     return "\n".join(parts)

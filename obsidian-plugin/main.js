@@ -1,4 +1,4 @@
-const { Plugin, Notice, MarkdownView, PluginSettingTab, Setting, ItemView } = require("obsidian");
+const { Plugin, Notice, MarkdownView, PluginSettingTab, Setting, ItemView, Modal } = require("obsidian");
 const fs = require("fs");
 const path = require("path");
 const { exec, execSync } = require("child_process");
@@ -49,6 +49,10 @@ class DavyJonesPlugin extends Plugin {
     this.registerView(CONTROL_VIEW_TYPE, (leaf) => new DavyJonesControlPanel(leaf, this));
     this.addRibbonIcon("sliders-horizontal", "DavyJones: Control Panel", () => this._activateControlPanel());
     this.addCommand({ id: "open-control-panel", name: "Open control panel", callback: () => this._activateControlPanel() });
+
+    // Task modal
+    this.addRibbonIcon("send", "DavyJones: New Task", () => new DavyJonesTaskModal(this.app, this).open());
+    this.addCommand({ id: "new-task", name: "Send a new task to agents", callback: () => new DavyJonesTaskModal(this.app, this).open() });
 
     // Status bar: connection indicator
     this._statusBarEl = this.addStatusBarItem();
@@ -672,6 +676,149 @@ class DavyJonesPlugin extends Plugin {
     input.addEventListener("blur", () => {
       setTimeout(() => { results.empty(); results.classList.remove("is-visible"); }, 150);
     });
+  }
+}
+
+// ─── Task Modal ───────────────────────────────────────────────
+
+class DavyJonesTaskModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this._scope = "vault";
+    this._maxTurns = 20;
+    this._verbosity = "normal";
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("davyjones-task-modal");
+
+    contentEl.createEl("h2", { text: "Send Task to DavyJones" });
+
+    // Task description
+    contentEl.createEl("label", { text: "What should the agents do?", cls: "davyjones-tm-label" });
+    this._textarea = contentEl.createEl("textarea", {
+      cls: "davyjones-tm-textarea",
+      attr: { rows: "6", placeholder: "Describe the task..." },
+    });
+
+    // Scope selector
+    const scopeSection = contentEl.createDiv({ cls: "davyjones-tm-section" });
+    scopeSection.createEl("label", { text: "Scope", cls: "davyjones-tm-label" });
+    const scopeRow = scopeSection.createDiv({ cls: "davyjones-tm-scope-row" });
+
+    const scopeOptions = [
+      { value: "file", label: "Current file" },
+      { value: "folder", label: "Current folder" },
+      { value: "vault", label: "Entire vault" },
+    ];
+
+    for (const opt of scopeOptions) {
+      const btn = scopeRow.createEl("button", {
+        text: opt.label,
+        cls: `davyjones-tm-scope-btn${this._scope === opt.value ? " is-active" : ""}`,
+      });
+      btn.addEventListener("click", () => {
+        this._scope = opt.value;
+        scopeRow.querySelectorAll(".davyjones-tm-scope-btn").forEach((b) => b.classList.remove("is-active"));
+        btn.classList.add("is-active");
+      });
+    }
+
+    // Advanced options (collapsible)
+    const advToggle = contentEl.createDiv({ cls: "davyjones-tm-adv-toggle" });
+    advToggle.createEl("span", { text: "\u25B8 Advanced options" });
+    const advContainer = contentEl.createDiv({ cls: "davyjones-tm-advanced" });
+    advContainer.style.display = "none";
+
+    advToggle.addEventListener("click", () => {
+      const visible = advContainer.style.display !== "none";
+      advContainer.style.display = visible ? "none" : "block";
+      advToggle.querySelector("span").textContent = (visible ? "\u25B8" : "\u25BE") + " Advanced options";
+    });
+
+    new Setting(advContainer).setName("Max turns per agent").addText((text) => {
+      text.setPlaceholder("20").setValue(String(this._maxTurns));
+      text.onChange((v) => { this._maxTurns = parseInt(v, 10) || 20; });
+      text.inputEl.type = "number";
+      text.inputEl.style.width = "70px";
+    });
+
+    new Setting(advContainer).setName("Verbosity").addDropdown((drop) => {
+      drop.addOption("concise", "Concise")
+        .addOption("normal", "Normal")
+        .addOption("detailed", "Detailed")
+        .setValue(this._verbosity)
+        .onChange((v) => { this._verbosity = v; });
+    });
+
+    // Footer with send button
+    const footer = contentEl.createDiv({ cls: "davyjones-tm-footer" });
+    const sendBtn = footer.createEl("button", { text: "Send Task", cls: "davyjones-tm-send-btn" });
+    sendBtn.addEventListener("click", () => this._submit());
+  }
+
+  async _submit() {
+    const description = this._textarea.value.trim();
+    if (!description) {
+      new Notice("Task description is required.");
+      return;
+    }
+
+    const scopeFiles = this._resolveScopeFiles();
+    const env = this.plugin._readDavyJonesEnv();
+    const port = env.HTTP_PORT || "5555";
+    const url = `http://localhost:${port}/api/task`;
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          scope: this._scope,
+          scopeFiles,
+          maxTurns: this._maxTurns,
+          verbosity: this._verbosity,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        new Notice("Task failed: " + (err.error || resp.statusText));
+        return;
+      }
+
+      const result = await resp.json();
+      new Notice(`Task sent (${result.task_id}). Agents will handle it.`);
+      this.close();
+    } catch (e) {
+      new Notice("Could not reach dispatcher. Is DavyJones running?");
+      console.error("DavyJones task submit error:", e);
+    }
+  }
+
+  _resolveScopeFiles() {
+    const activeFile = this.app.workspace.getActiveFile();
+
+    if (this._scope === "file" && activeFile) {
+      return [activeFile.path];
+    }
+
+    if (this._scope === "folder" && activeFile && activeFile.parent) {
+      const parentPath = activeFile.parent.path;
+      return this.app.vault.getMarkdownFiles()
+        .filter((f) => f.parent && f.parent.path === parentPath)
+        .map((f) => f.path);
+    }
+
+    // "vault" scope — empty list, agents discover at runtime
+    return [];
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 

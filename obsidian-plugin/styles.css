@@ -656,3 +656,124 @@
   padding-top: 16px;
   border-top: 1px solid var(--background-modifier-border);
 }
+
+/* ─── Task Modal ─────────────────────────────────────────── */
+
+.davyjones-task-modal {
+  max-width: 560px;
+}
+
+.davyjones-task-modal h2 {
+  margin: 0 0 16px 0;
+  font-size: 20px;
+  color: var(--text-normal);
+}
+
+.davyjones-tm-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-bottom: 6px;
+}
+
+.davyjones-tm-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.davyjones-tm-textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.davyjones-tm-textarea:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+  background: var(--background-primary);
+}
+
+.davyjones-tm-section {
+  margin-top: 16px;
+}
+
+.davyjones-tm-scope-row {
+  display: flex;
+  gap: 8px;
+}
+
+.davyjones-tm-scope-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.davyjones-tm-scope-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.davyjones-tm-scope-btn.is-active {
+  background: rgba(var(--interactive-accent-rgb), 0.15);
+  color: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.davyjones-tm-adv-toggle {
+  margin-top: 16px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  user-select: none;
+}
+
+.davyjones-tm-adv-toggle:hover {
+  color: var(--text-normal);
+}
+
+.davyjones-tm-advanced {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--background-secondary);
+  border-radius: 6px;
+}
+
+.davyjones-tm-advanced .setting-item {
+  border-top: none;
+  padding: 6px 0;
+}
+
+.davyjones-tm-footer {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.davyjones-tm-send-btn {
+  padding: 8px 28px;
+  border-radius: 6px;
+  border: none;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.davyjones-tm-send-btn:hover {
+  filter: brightness(1.1);
+}

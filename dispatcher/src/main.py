@@ -242,6 +242,13 @@ def main() -> None:
     elif github_repo and not github_token:
         logger.warning("GITHUB_REPO set but GITHUB_TOKEN missing — GitHub monitor disabled")
 
+    # Start HTTP API for direct task submission from Obsidian plugin
+    try:
+        from src.http_api import HttpApi
+        HttpApi(auto_commit_fn=_auto_commit).start()
+    except Exception:
+        logger.exception("Failed to start HTTP API")
+
     logger.info("Dispatcher ready. Polling for changes (overseer mode)...")
 
     heartbeat_path = os.path.join(VAULT_PATH, ".davyjones")
