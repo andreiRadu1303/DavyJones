@@ -177,7 +177,7 @@ if [ ! -d "$VAULT_ABS/.git" ]; then
 .davyjones.env
 EOF
     git add -A
-    git commit -m "Initial vault commit"
+    git -c user.name="DavyJones" -c user.email="davyjones@local" commit -m "Initial vault commit"
 fi
 
 # ── Extract credentials ──────────────────────────────────────

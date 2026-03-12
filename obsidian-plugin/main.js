@@ -326,7 +326,7 @@ class DavyJonesPlugin extends Plugin {
     this._committing = true;
     this._renderGitBar();
 
-    const cmd = 'git add -A && git commit -m "DavyJones: vault update"';
+    const cmd = 'git add -A && git -c user.name="DavyJones" -c user.email="davyjones@local" commit -m "DavyJones: vault update"';
     exec(cmd, { cwd: this._vaultPath, timeout: 15000 }, (err, stdout, stderr) => {
       this._committing = false;
       if (err) {
