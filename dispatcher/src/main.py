@@ -239,24 +239,31 @@ def main() -> None:
 
     heartbeat_path = os.path.join(VAULT_PATH, ".davyjones")
 
-    while True:
-        try:
-            # Check credential health every cycle
-            creds_local = "/tmp/claude-credentials.json"
-            ensure_valid_token(creds_local)
-
-            # Write heartbeat with credential health
+    # Background heartbeat thread — keeps the heartbeat fresh even during
+    # long-running agent execution (overseer + tasks can take minutes).
+    def _heartbeat_loop():
+        while True:
             try:
                 cred_health = get_cred_health()
-                heartbeat = {
+                hb = {
                     "active": True,
                     "ts": time.time(),
                     "creds": cred_health.to_dict(),
                 }
                 with open(heartbeat_path, "w") as f:
-                    json.dump(heartbeat, f)
-            except OSError:
+                    json.dump(hb, f)
+            except Exception:
                 pass
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+    hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    hb_thread.start()
+
+    while True:
+        try:
+            # Check credential health every cycle
+            creds_local = "/tmp/claude-credentials.json"
+            ensure_valid_token(creds_local)
 
             # Pull remote changes (if a remote is configured)
             pull_remote(repo)

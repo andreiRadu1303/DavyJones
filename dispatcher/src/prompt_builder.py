@@ -37,6 +37,7 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
         parts.extend([
             "- Read and write files relative to /vault.",
             "- When creating new notes, include YAML frontmatter.",
+            "- Do NOT start a note with a heading that duplicates the filename — Obsidian already displays the filename as the title.",
             "- Use [[wiki-link]] syntax for cross-references where appropriate.",
             "- Write your results directly to the task file under a '## Results' section.",
         ])

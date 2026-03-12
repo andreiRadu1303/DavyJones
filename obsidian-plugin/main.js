@@ -86,6 +86,11 @@ class DavyJonesPlugin extends Plugin {
     this.registerInterval(window.setInterval(() => {
       this._updateStatusBar();
       this._updateGitStatus();
+      // Re-render nav bar if Obsidian silently removed it (e.g. mode switch)
+      const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (activeView && activeView.file && !activeView.contentEl.querySelector(".davyjones-nav")) {
+        this.renderUI();
+      }
       // Refresh history panel if open
       for (const leaf of this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)) {
         if (leaf.view && leaf.view.refresh) leaf.view.refresh();
@@ -331,6 +336,7 @@ class DavyJonesPlugin extends Plugin {
         new Notice("Changes committed");
       }
       this._updateGitStatus();
+      this._updateStatusBar();
     });
   }
 
