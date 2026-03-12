@@ -365,6 +365,14 @@ def build_direct_task(
         "",
     ])
 
+    # For direct tasks, always use a placeholder file_path
+    parts.extend([
+        'For all sub-tasks, set `"file_path"` to `".davyjones-direct-task"`. This is a',
+        "placeholder — there is no task note file for direct submissions. Agents are free",
+        "to read and modify any vault file they need to complete their work.",
+        "",
+    ])
+
     # Scope files
     if scope_files:
         parts.extend([
@@ -376,13 +384,6 @@ def build_direct_task(
         for fpath in scope_files:
             parts.append(f"- `{fpath}`")
         parts.append("")
-
-        # For direct tasks, set file_path to a placeholder since there's no task note
-        parts.extend([
-            'For all sub-tasks, set `"file_path"` to `".davyjones-direct-task"` since',
-            "there is no task note file for this direct submission.",
-            "",
-        ])
 
     # Context
     if scope_context:

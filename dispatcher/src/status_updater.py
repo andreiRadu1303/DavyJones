@@ -60,11 +60,6 @@ def update_status(
         elif new_status == "failed" and result and result.error:
             post.metadata["error_message"] = result.error
 
-        # Append results to content if completed
-        if new_status == "completed" and result and result.output_text:
-            separator = "\n\n---\n\n## Agent Results\n\n"
-            post.content = post.content.rstrip() + separator + result.output_text
-
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(frontmatter.dumps(post))
 

@@ -352,16 +352,8 @@ def execute_plan(
         mode = "concurrent" if len(level_tasks) > 1 else "sequential"
         logger.info("  Level %d (%s): %s", level_idx, mode, task_descs)
 
-    # Snapshot task files before execution so we can restore if agents corrupt them
+    # Mark task files as in_progress (commit workflow only — for frontmatter status)
     files_in_plan: set[str] = {t.file_path for t in plan.tasks}
-    file_snapshots: dict[str, str] = {}
-    for file_path in files_in_plan:
-        full_path = os.path.join(VAULT_PATH, file_path)
-        if os.path.isfile(full_path):
-            with open(full_path, "r", encoding="utf-8") as f:
-                file_snapshots[file_path] = f.read()
-
-    # Mark all target files as in_progress (once per file)
     for file_path in files_in_plan:
         full_path = os.path.join(VAULT_PATH, file_path)
         if os.path.isfile(full_path):
@@ -420,8 +412,8 @@ def execute_plan(
                     if result.status == "failed":
                         failed_ids.add(task.id)
 
-    # Restore task files from snapshot (in case agents modified them), then aggregate
-    _aggregate_results(plan, results, auto_commit_fn, file_snapshots)
+    # Update task file frontmatter status (commit workflow — marks tasks completed/failed)
+    _update_task_statuses(plan, results, auto_commit_fn)
 
     succeeded = sum(1 for r in results.values() if r.status == "completed")
     failed = sum(1 for r in results.values() if r.status == "failed")
@@ -430,17 +422,16 @@ def execute_plan(
     return results
 
 
-def _aggregate_results(
+def _update_task_statuses(
     plan: OverseerPlan,
     results: dict[str, TaskResult],
     auto_commit_fn,
-    file_snapshots: dict[str, str] | None = None,
 ) -> None:
-    """Aggregate task results per file and write combined output.
+    """Update frontmatter status on task files (commit workflow).
 
-    If file_snapshots is provided, restores the original file content
-    before writing results. This protects against agents that modify
-    the task file despite being told not to.
+    For direct tasks (.davyjones-direct-task), the file doesn't exist so
+    this is a no-op. For commit-triggered task notes, marks them as
+    completed/failed so they don't re-trigger.
     """
     from collections import defaultdict
 
@@ -450,51 +441,17 @@ def _aggregate_results(
 
     for file_path, tasks in file_tasks.items():
         full_path = os.path.join(VAULT_PATH, file_path)
-
-        # Restore from snapshot if an agent modified the file
-        if file_snapshots and file_path in file_snapshots:
-            try:
-                current = ""
-                if os.path.isfile(full_path):
-                    with open(full_path, "r", encoding="utf-8") as f:
-                        current = f.read()
-                if current != file_snapshots[file_path]:
-                    logger.warning("Restoring %s from snapshot (agent modified it)", file_path)
-                    with open(full_path, "w", encoding="utf-8") as f:
-                        f.write(file_snapshots[file_path])
-            except OSError:
-                logger.exception("Failed to restore snapshot for %s", file_path)
-
         if not os.path.isfile(full_path):
             continue
 
         task_results = [results.get(t.id) for t in tasks]
         all_succeeded = all(r and r.status == "completed" for r in task_results)
         final_status = "completed" if all_succeeded else "failed"
+        error = None if all_succeeded else "One or more sub-tasks failed"
 
-        # Build combined output
-        output_parts = []
-        for task in tasks:
-            r = results.get(task.id)
-            if not r:
-                continue
-            status_label = "completed" if r.status == "completed" else "FAILED"
-            output_parts.append(f"### {task.id}: {task.description} — {status_label}\n")
-            if r.output_text:
-                output_parts.append(r.output_text.strip())
-            elif r.error:
-                output_parts.append(f"Error: {r.error}")
-            output_parts.append("")
-
-        combined = TaskResult(
-            status=final_status,
-            output_text="\n".join(output_parts) if output_parts else None,
-            error=None if all_succeeded else "One or more sub-tasks failed",
-        )
-
-        update_status(file_path, final_status, combined)
+        update_status(file_path, final_status, TaskResult(status=final_status, error=error))
         auto_commit_fn(file_path, final_status)
 
         ok_count = sum(1 for r in task_results if r and r.status == "completed")
-        logger.info("Aggregated results for %s: %d/%d tasks succeeded",
+        logger.info("Status updated for %s: %d/%d tasks succeeded",
                     file_path, ok_count, len(tasks))
