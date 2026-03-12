@@ -21,7 +21,7 @@ from src.git_watcher import (
     save_last_sha,
 )
 from src.overseer import execute_plan, gather_commit_data, run_overseer
-from src.status_updater import update_status
+from src.status_updater import _acquire_lock, _release_lock, update_status
 from src.task_builder import build
 
 logging.basicConfig(
@@ -35,39 +35,38 @@ _active_tasks: set[str] = set()
 _active_lock = threading.Lock()
 
 
-_commit_lock = threading.Lock()
-
-
 def _auto_commit(file_path: str, status: str) -> None:
     """Commit agent changes + status update to the vault repo."""
-    with _commit_lock:
-        try:
-            env = {
-                **os.environ,
-                "GIT_AUTHOR_NAME": "DavyJones Agent",
-                "GIT_AUTHOR_EMAIL": "davyjones@local",
-                "GIT_COMMITTER_NAME": "DavyJones Agent",
-                "GIT_COMMITTER_EMAIL": "davyjones@local",
-            }
-            subprocess.run(
-                ["git", "add", "-A"],
-                cwd=VAULT_PATH, env=env, capture_output=True, timeout=10,
-            )
-            msg = f"DavyJones: {status} — {file_path}"
-            result = subprocess.run(
-                ["git", "commit", "-m", msg, "--allow-empty"],
-                cwd=VAULT_PATH, env=env, capture_output=True, timeout=10,
-            )
-            if result.returncode == 0:
-                logger.info("Auto-committed: %s", msg)
+    _acquire_lock()
+    try:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "DavyJones Agent",
+            "GIT_AUTHOR_EMAIL": "davyjones@local",
+            "GIT_COMMITTER_NAME": "DavyJones Agent",
+            "GIT_COMMITTER_EMAIL": "davyjones@local",
+        }
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=VAULT_PATH, env=env, capture_output=True, timeout=10,
+        )
+        msg = f"DavyJones: {status} — {file_path}"
+        result = subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=VAULT_PATH, env=env, capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("Auto-committed: %s", msg)
+        else:
+            stderr = result.stderr.decode().strip()
+            if "nothing to commit" in stderr:
+                logger.info("Nothing to commit for %s", file_path)
             else:
-                stderr = result.stderr.decode().strip()
-                if "nothing to commit" in stderr:
-                    logger.info("Nothing to commit for %s", file_path)
-                else:
-                    logger.warning("Commit failed: %s", stderr)
-        except Exception:
-            logger.exception("Auto-commit error for %s", file_path)
+                logger.warning("Commit failed: %s", stderr)
+    except Exception:
+        logger.exception("Auto-commit error for %s", file_path)
+    finally:
+        _release_lock()
 
 
 def _run_in_thread(file_path: str, payload) -> None:
@@ -101,35 +100,43 @@ def _fallback_dispatch(changed_files: list[str]) -> None:
 
 def _process_task(file_path: str) -> None:
     """Process a single pending task file (non-blocking)."""
-    # Skip if already running
+    # Atomically check and reserve the task slot
     with _active_lock:
         if file_path in _active_tasks:
             logger.info("Skipping %s: already running", file_path)
             return
-
-    full_path = os.path.join(VAULT_PATH, file_path)
-
-    metadata, content = parse_note(full_path)
-    if not is_actionable(metadata):
-        return
-
-    if not check_dependencies_met(metadata, VAULT_PATH):
-        logger.info("Skipping %s: dependencies not met", file_path)
-        return
-
-    logger.info("Fallback processing task: %s (type=%s, priority=%s)",
-                file_path, metadata.type, metadata.priority)
-
-    context = resolve(VAULT_PATH, full_path)
-    logger.info("Context length: %d chars", len(context))
-
-    payload = build(file_path, metadata, content, context)
-
-    # Mark in-progress, commit, and track
-    update_status(file_path, "in_progress")
-    _auto_commit(file_path, "in_progress")
-    with _active_lock:
         _active_tasks.add(file_path)
+
+    try:
+        full_path = os.path.join(VAULT_PATH, file_path)
+
+        metadata, content = parse_note(full_path)
+        if not is_actionable(metadata):
+            with _active_lock:
+                _active_tasks.discard(file_path)
+            return
+
+        if not check_dependencies_met(metadata, VAULT_PATH):
+            logger.info("Skipping %s: dependencies not met", file_path)
+            with _active_lock:
+                _active_tasks.discard(file_path)
+            return
+
+        logger.info("Fallback processing task: %s (type=%s, priority=%s)",
+                    file_path, metadata.type, metadata.priority)
+
+        context = resolve(VAULT_PATH, full_path)
+        logger.info("Context length: %d chars", len(context))
+
+        payload = build(file_path, metadata, content, context)
+
+        # Mark in-progress and commit
+        update_status(file_path, "in_progress")
+        _auto_commit(file_path, "in_progress")
+    except Exception:
+        with _active_lock:
+            _active_tasks.discard(file_path)
+        raise
 
     # Fire and forget — runs in its own thread + container
     t = threading.Thread(
