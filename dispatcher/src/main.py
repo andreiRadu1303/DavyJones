@@ -272,6 +272,15 @@ def main() -> None:
     except Exception:
         logger.exception("Failed to start Scribe worker")
 
+    # Sync dynamic MCP containers for additional service instances
+    try:
+        from src.mcp_manager import sync as mcp_sync
+        from src.vault_rules import load_vault_rules
+        vault_rules = load_vault_rules()
+        mcp_sync(vault_rules.get("serviceInstances", []))
+    except Exception:
+        logger.exception("Failed to sync MCP instances")
+
     logger.info("Dispatcher ready. Polling for changes (overseer mode)...")
 
     heartbeat_path = os.path.join(VAULT_PATH, ".davyjones")

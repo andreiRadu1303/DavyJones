@@ -92,6 +92,17 @@ def run_raw(
             "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
         }
 
+        # Inject custom secrets from vault rules
+        vault_rules = load_vault_rules()
+        for key, value in vault_rules.get("secrets", {}).items():
+            environment[key] = str(value)
+
+        # Inject dynamic MCP instance URLs so the agent can discover them
+        from src.mcp_manager import get_instance_urls
+        mcp_instances = get_instance_urls()
+        if mcp_instances:
+            environment["DAVYJONES_MCP_INSTANCES"] = json.dumps(mcp_instances)
+
         volumes = {
             VAULT_HOST_PATH: {"bind": "/vault", "mode": "rw"},
         }

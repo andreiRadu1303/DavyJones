@@ -1245,7 +1245,7 @@ class DavyJonesControlPanel extends ItemView {
     // ── MCP Services ──
     const mcpSection = body.createDiv({ cls: "davyjones-cp-section" });
     mcpSection.createEl("h3", { text: "MCP Services" });
-    mcpSection.createEl("p", { cls: "davyjones-cp-desc", text: "Toggle which integrations agents can use. Tokens are configured in Settings > DavyJones." });
+    mcpSection.createEl("p", { cls: "davyjones-cp-desc", text: "Click a service to configure tokens and additional accounts." });
 
     const mcpGrid = mcpSection.createDiv({ cls: "davyjones-cp-mcp-grid" });
 
@@ -1253,8 +1253,9 @@ class DavyJonesControlPanel extends ItemView {
       const enabledKey = `${service.id.toUpperCase()}_MCP_ENABLED`;
       const hasToken = !!this._config[service.tokenKey];
       const isEnabled = this._config[enabledKey] !== "false";
+      const instanceCount = (this._rules.serviceInstances || []).filter(i => i.service === service.id).length;
 
-      const card = mcpGrid.createDiv({ cls: "davyjones-cp-mcp-card" });
+      const card = mcpGrid.createDiv({ cls: "davyjones-cp-mcp-card davyjones-cp-mcp-card-clickable" });
       const cardTop = card.createDiv({ cls: "davyjones-cp-mcp-card-top" });
       const dot = cardTop.createEl("span", { cls: "davyjones-dot" });
       dot.addClass(hasToken && isEnabled ? "davyjones-dot-on" : "davyjones-dot-off");
@@ -1266,11 +1267,16 @@ class DavyJonesControlPanel extends ItemView {
         text: statusText,
       });
 
+      if (instanceCount > 0) {
+        cardTop.createEl("span", { cls: "davyjones-cp-mcp-badge", text: `+${instanceCount}` });
+      }
+
       const cardBody = card.createDiv({ cls: "davyjones-cp-mcp-card-body" });
       cardBody.createEl("p", { cls: "davyjones-cp-mcp-desc", text: service.desc });
 
       if (hasToken) {
-        new Setting(cardBody)
+        const toggleRow = cardBody.createDiv({ cls: "davyjones-cp-mcp-toggle-row" });
+        new Setting(toggleRow)
           .setName("Active")
           .addToggle((toggle) => {
             toggle.setValue(isEnabled).onChange((value) => {
@@ -1285,9 +1291,28 @@ class DavyJonesControlPanel extends ItemView {
               }
             });
           });
+        // Stop toggle clicks from opening modal
+        toggleRow.addEventListener("click", (e) => e.stopPropagation());
       } else {
-        cardBody.createEl("p", { cls: "davyjones-cp-mcp-hint", text: `Add a ${service.name} token in Settings > DavyJones to enable.` });
+        cardBody.createEl("p", { cls: "davyjones-cp-mcp-hint", text: `Click to add a ${service.name} token.` });
       }
+
+      // Click card → open config modal
+      card.addEventListener("click", () => {
+        new DavyJonesMCPConfigModal(
+          this.app, this.plugin, service.id,
+          this._config, this._rules,
+          (updatedConfig, updatedInstances) => {
+            // Merge config updates
+            Object.assign(this._config, updatedConfig);
+            // Replace instances for this service, keep others
+            const otherInstances = (this._rules.serviceInstances || []).filter(i => i.service !== service.id);
+            this._rules.serviceInstances = [...otherInstances, ...updatedInstances.filter(i => i.id && i.token)];
+            this._dirty = true;
+            this._render();
+          },
+        ).open();
+      });
     }
 
     // ── Agent Behavior ──
@@ -1394,6 +1419,83 @@ class DavyJonesControlPanel extends ItemView {
       });
     }
 
+    // ── Custom Secrets ──
+    const secretsSection = body.createDiv({ cls: "davyjones-cp-section" });
+    secretsSection.createEl("h3", { text: "Custom Secrets" });
+    secretsSection.createEl("p", { cls: "davyjones-cp-desc", text: "Environment variables injected into every agent container (e.g., GCP keys, Strapi passwords)." });
+
+    if (!this._rules.secrets) this._rules.secrets = {};
+    const secretsContainer = secretsSection.createDiv({ cls: "davyjones-cp-secrets-list" });
+
+    const renderSecrets = () => {
+      secretsContainer.empty();
+      const entries = Object.entries(this._rules.secrets);
+
+      for (const [key, value] of entries) {
+        const row = secretsContainer.createDiv({ cls: "davyjones-cp-secrets-row" });
+
+        const keyInput = row.createEl("input", {
+          type: "text",
+          cls: "davyjones-cp-secrets-key",
+          placeholder: "KEY_NAME",
+          value: key,
+        });
+
+        const valueInput = row.createEl("input", {
+          type: "password",
+          cls: "davyjones-cp-secrets-value",
+          placeholder: "secret value",
+        });
+        valueInput.value = value;
+
+        const revealBtn = row.createEl("button", { cls: "davyjones-cp-secrets-reveal", text: "Show" });
+        revealBtn.addEventListener("click", () => {
+          const isPassword = valueInput.type === "password";
+          valueInput.type = isPassword ? "text" : "password";
+          revealBtn.setText(isPassword ? "Hide" : "Show");
+        });
+
+        const delBtn = row.createEl("button", { cls: "davyjones-cp-secrets-del", text: "Delete" });
+        delBtn.addEventListener("click", () => {
+          delete this._rules.secrets[key];
+          this._dirty = true;
+          renderSecrets();
+        });
+
+        // On key change: re-key the entry
+        keyInput.addEventListener("change", () => {
+          const newKey = keyInput.value.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+          if (newKey && newKey !== key) {
+            delete this._rules.secrets[key];
+            this._rules.secrets[newKey] = valueInput.value;
+            this._dirty = true;
+            renderSecrets();
+          }
+        });
+
+        valueInput.addEventListener("input", () => {
+          this._rules.secrets[key] = valueInput.value;
+          this._dirty = true;
+        });
+      }
+
+      if (entries.length === 0) {
+        secretsContainer.createEl("p", { cls: "davyjones-cp-secrets-empty", text: "No secrets configured. Click \"+\" to add one." });
+      }
+    };
+
+    renderSecrets();
+
+    const addSecretBtn = secretsSection.createEl("button", { cls: "davyjones-cp-add-btn", text: "+ Add Secret" });
+    addSecretBtn.addEventListener("click", () => {
+      // Generate a unique placeholder key
+      let idx = 1;
+      while (this._rules.secrets[`SECRET_${idx}`]) idx++;
+      this._rules.secrets[`SECRET_${idx}`] = "";
+      this._dirty = true;
+      renderSecrets();
+    });
+
     // ── Apply bar ──
     const applyBar = el.createDiv({ cls: "davyjones-cp-apply-bar" });
     const applyBtn = applyBar.createEl("button", { cls: "davyjones-cp-apply-btn", text: "Apply & Restart" });
@@ -1408,10 +1510,167 @@ class DavyJonesControlPanel extends ItemView {
 }
 
 const CP_SERVICE_DEFS = [
-  { id: "github", name: "GitHub", tokenKey: "GITHUB_TOKEN", desc: "Repos, issues, PRs, actions, code search." },
-  { id: "gitlab", name: "GitLab", tokenKey: "GITLAB_TOKEN", desc: "Repos, issues, MRs, files, branches." },
-  { id: "slack", name: "Slack", tokenKey: "SLACK_BOT_TOKEN", desc: "Channels, messages, reactions, users, search." },
+  { id: "github", name: "GitHub", tokenKey: "GITHUB_TOKEN", desc: "Repos, issues, PRs, actions, code search.", hint: "GitHub > Settings > Developer settings > Personal access tokens", prefix: "ghp_", supportsMulti: true },
+  { id: "gitlab", name: "GitLab", tokenKey: "GITLAB_TOKEN", desc: "Repos, issues, MRs, files, branches.", hint: "GitLab > Settings > Access Tokens", prefix: "glpat-", supportsMulti: true },
+  { id: "slack", name: "Slack", tokenKey: "SLACK_BOT_TOKEN", desc: "Channels, messages, reactions, users, search.", hint: "api.slack.com/apps > OAuth & Permissions", prefix: "xoxb-", supportsMulti: false },
 ];
+
+// ─── MCP Configuration Modal ──────────────────────────────────
+
+class DavyJonesMCPConfigModal extends Modal {
+  constructor(app, plugin, serviceId, config, rules, onSave) {
+    super(app);
+    this.plugin = plugin;
+    this.serviceId = serviceId;
+    this.serviceDef = CP_SERVICE_DEFS.find(s => s.id === serviceId);
+    this._config = { ...config };
+    this._rules = rules;
+    this._onSave = onSave;
+    // Deep-clone the instances for this service so cancel doesn't persist
+    this._instances = (rules.serviceInstances || [])
+      .filter(i => i.service === serviceId)
+      .map(i => ({ ...i, config: { ...(i.config || {}) } }));
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("davyjones-mcp-modal");
+    this._renderContent();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+
+  _renderContent() {
+    const el = this.contentEl;
+    el.empty();
+
+    el.createEl("h2", { text: `Configure ${this.serviceDef.name}` });
+
+    // ── Primary Token ──
+    const primarySection = el.createDiv({ cls: "davyjones-mcp-modal-primary" });
+    primarySection.createEl("h4", { text: "Primary Token" });
+    if (this.serviceDef.hint) {
+      primarySection.createEl("p", { cls: "davyjones-mcp-modal-hint", text: this.serviceDef.hint });
+    }
+
+    const primaryRow = primarySection.createDiv({ cls: "davyjones-mcp-modal-token-row" });
+    const primaryInput = primaryRow.createEl("input", {
+      type: "password",
+      cls: "davyjones-mcp-modal-input",
+      placeholder: this.serviceDef.prefix ? `${this.serviceDef.prefix}...` : "Token",
+    });
+    primaryInput.value = this._config[this.serviceDef.tokenKey] || "";
+    primaryInput.addEventListener("input", () => {
+      this._config[this.serviceDef.tokenKey] = primaryInput.value;
+    });
+
+    const revealBtn = primaryRow.createEl("button", { cls: "davyjones-mcp-modal-reveal", text: "Show" });
+    revealBtn.addEventListener("click", () => {
+      const isPassword = primaryInput.type === "password";
+      primaryInput.type = isPassword ? "text" : "password";
+      revealBtn.setText(isPassword ? "Hide" : "Show");
+    });
+
+    // ── Additional Accounts (only for multi-capable services) ──
+    if (this.serviceDef.supportsMulti) {
+      const instancesSection = el.createDiv({ cls: "davyjones-mcp-modal-instances" });
+      instancesSection.createEl("h4", { text: "Additional Accounts" });
+      instancesSection.createEl("p", { cls: "davyjones-mcp-modal-hint", text: "Agents connect to all accounts simultaneously." });
+
+      const instancesList = instancesSection.createDiv({ cls: "davyjones-mcp-modal-instances-list" });
+
+      for (let i = 0; i < this._instances.length; i++) {
+        this._renderInstance(instancesList, i);
+      }
+
+      const addBtn = instancesSection.createEl("button", { cls: "davyjones-cp-add-btn", text: "+ Add Account" });
+      addBtn.addEventListener("click", () => {
+        this._instances.push({
+          id: "",
+          service: this.serviceId,
+          label: "",
+          token: "",
+          config: {},
+        });
+        this._renderContent();
+      });
+    }
+
+    // ── Actions ──
+    const actions = el.createDiv({ cls: "davyjones-mcp-modal-actions" });
+
+    const saveBtn = actions.createEl("button", { cls: "davyjones-mcp-modal-save", text: "Save" });
+    saveBtn.addEventListener("click", () => {
+      this._save();
+      this.close();
+    });
+
+    const cancelBtn = actions.createEl("button", { cls: "davyjones-mcp-modal-cancel", text: "Cancel" });
+    cancelBtn.addEventListener("click", () => {
+      this.close();
+    });
+  }
+
+  _renderInstance(container, index) {
+    const inst = this._instances[index];
+    const card = container.createDiv({ cls: "davyjones-mcp-modal-instance" });
+
+    const headerRow = card.createDiv({ cls: "davyjones-mcp-modal-instance-header" });
+    headerRow.createEl("span", { cls: "davyjones-mcp-modal-instance-num", text: `Account ${index + 1}` });
+    const delBtn = headerRow.createEl("button", { cls: "davyjones-mcp-modal-instance-del", text: "Delete" });
+    delBtn.addEventListener("click", () => {
+      this._instances.splice(index, 1);
+      this._renderContent();
+    });
+
+    const fields = card.createDiv({ cls: "davyjones-mcp-modal-instance-fields" });
+
+    // Label
+    new Setting(fields)
+      .setName("Label")
+      .setDesc("Friendly name (e.g., \"Work\", \"Personal\")")
+      .addText((text) => {
+        text.setPlaceholder("e.g., Work GitHub")
+          .setValue(inst.label || "")
+          .onChange((value) => {
+            inst.label = value;
+            inst.id = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+          });
+      });
+
+    // Token
+    new Setting(fields)
+      .setName("Token")
+      .addText((text) => {
+        text.setPlaceholder(this.serviceDef.prefix ? `${this.serviceDef.prefix}...` : "Token")
+          .setValue(inst.token || "")
+          .onChange((value) => { inst.token = value; });
+        text.inputEl.type = "password";
+      });
+
+    // GitLab-specific: API URL
+    if (this.serviceId === "gitlab") {
+      new Setting(fields)
+        .setName("API URL")
+        .setDesc("For self-hosted GitLab instances")
+        .addText((text) => {
+          text.setPlaceholder("https://gitlab.com")
+            .setValue((inst.config && inst.config.apiUrl) || "")
+            .onChange((value) => {
+              if (!inst.config) inst.config = {};
+              inst.config.apiUrl = value;
+            });
+        });
+    }
+  }
+
+  _save() {
+    // Update the primary token in the env config
+    this._onSave(this._config, this._instances);
+  }
+}
 
 // ─── Settings Tab ─────────────────────────────────────────────
 

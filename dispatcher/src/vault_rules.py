@@ -22,6 +22,8 @@ _DEFAULT_RULES = {
         "modifyFiles": True,
         "runGitCommands": True,
     },
+    "secrets": {},
+    "serviceInstances": [],
 }
 
 
@@ -35,6 +37,14 @@ def load_vault_rules() -> dict:
             **_DEFAULT_RULES["allowedOperations"],
             **rules.get("allowedOperations", {}),
         }
+        merged["secrets"] = {
+            **_DEFAULT_RULES["secrets"],
+            **rules.get("secrets", {}),
+        }
+        # serviceInstances is a list — use file version or default
+        merged["serviceInstances"] = rules.get(
+            "serviceInstances", list(_DEFAULT_RULES["serviceInstances"])
+        )
         return merged
     except (FileNotFoundError, json.JSONDecodeError):
         return dict(_DEFAULT_RULES)

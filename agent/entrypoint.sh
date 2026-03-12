@@ -67,6 +67,19 @@ github_enabled = os.environ.get('GITHUB_MCP_ENABLED', 'true').lower() != 'false'
 if github_token and github_enabled:
     servers['github'] = {'type': 'sse', 'url': github_url}
 
+# Dynamic MCP instances (additional GitHub/GitLab accounts from dispatcher)
+mcp_instances_raw = os.environ.get('DAVYJONES_MCP_INSTANCES', '')
+if mcp_instances_raw:
+    try:
+        instances = json.loads(mcp_instances_raw)
+        for inst in instances:
+            inst_id = inst.get('id', '')
+            inst_url = inst.get('url', '')
+            if inst_id and inst_url:
+                servers[inst_id] = {'type': 'sse', 'url': inst_url}
+    except Exception as e:
+        print(f'[agent] Failed to parse DAVYJONES_MCP_INSTANCES: {e}', file=sys.stderr)
+
 config = {'mcpServers': servers}
 with open('$MCP_CONFIG', 'w') as f:
     json.dump(config, f, indent=2)
