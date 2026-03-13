@@ -1908,6 +1908,29 @@
   border-color: rgb(220, 80, 80);
 }
 
+.davyjones-em-run-now-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(124, 58, 237, 0.4);
+  background: rgba(124, 58, 237, 0.1);
+  color: rgb(124, 58, 237);
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 8px;
+  display: block;
+  margin-left: auto;
+}
+
+.davyjones-em-run-now-btn:hover {
+  background: rgba(124, 58, 237, 0.2);
+  border-color: rgb(124, 58, 237);
+}
+
+.davyjones-em-run-now-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* ── ICS Import Modal ── */
 
 .davyjones-ics-modal {
