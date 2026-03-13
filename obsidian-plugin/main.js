@@ -1919,8 +1919,11 @@ class DavyJonesEventModal extends Modal {
         t.inputEl.type = "number"; t.inputEl.style.width = "70px";
       });
 
-      // Dispatch history (edit mode only)
+      // Run now + Dispatch history (edit mode only)
       if (this._isEdit && this._event?.task) {
+        const runNowBtn = taskConfig.createEl("button", { cls: "davyjones-em-run-now-btn", text: "Run now" });
+        runNowBtn.addEventListener("click", () => this._runNow(runNowBtn));
+
         const historyEl = taskConfig.createDiv({ cls: "davyjones-em-dispatch-history" });
         const lastRun = this._event.task.lastDispatchedAt;
         const lastStatus = this._event.task.lastStatus;
@@ -1997,6 +2000,49 @@ class DavyJonesEventModal extends Modal {
     if (hrs < 24) return `${hrs}h ago`;
     const days = Math.floor(hrs / 24);
     return `${days}d ago`;
+  }
+
+  async _runNow(btn) {
+    const description = this._task.agentDescription?.trim();
+    if (!description) {
+      new Notice("Agent prompt is required to run a task.");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Dispatching…";
+
+    const env = this.plugin._readDavyJonesEnv();
+    const port = env.HTTP_PORT || "5555";
+    const url = `http://localhost:${port}/api/task`;
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          scopeFiles: this._task.scopeFiles || [],
+          maxTurns: this._task.maxTurns || 20,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        new Notice("Run failed: " + (err.error || resp.statusText));
+        btn.disabled = false;
+        btn.textContent = "Run now";
+        return;
+      }
+
+      const result = await resp.json();
+      new Notice(`Task dispatched (${result.task_id}). Agents will handle it.`);
+      btn.textContent = "Dispatched";
+    } catch (e) {
+      new Notice("Run failed: " + e.message);
+      btn.disabled = false;
+      btn.textContent = "Run now";
+    }
   }
 
   _buildEvent(id) {
