@@ -16,4 +16,4 @@ EXPOSE 3010
 CMD ["supergateway", \
      "--stdio", "node /opt/obsidian-mcp/dist/index.js /vault", \
      "--port", "3010", \
-     "--outputTransport", "sse"]
+     "--outputTransport", "streamableHttp"]

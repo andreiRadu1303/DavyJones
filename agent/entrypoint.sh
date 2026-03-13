@@ -42,9 +42,9 @@ import json, os, sys
 servers = {}
 
 # Obsidian MCP (always available on the Docker network)
-obsidian_url = os.environ.get('OBSIDIAN_MCP_URL', 'http://obsidian-mcp:3010/sse')
+obsidian_url = os.environ.get('OBSIDIAN_MCP_URL', 'http://obsidian-mcp:3010/mcp')
 if obsidian_url:
-    servers['obsidian'] = {'type': 'sse', 'url': obsidian_url}
+    servers['obsidian'] = {'type': 'http', 'url': obsidian_url}
 
 # Slack MCP (if token configured and enabled)
 slack_url = os.environ.get('SLACK_MCP_URL', 'http://slack-mcp:3001/sse')
