@@ -47,6 +47,8 @@ class ScribeJob:
     source_detail: dict = field(default_factory=dict)
     description: str = ""
     duration_seconds: float = 0.0
+    overseer_raw_output: str = ""        # overseer stderr for the report
+    plan_json: dict | None = None        # raw overseer plan JSON
 
 
 # ─── Report models (Pydantic — serialised to JSON) ────────────
@@ -58,6 +60,8 @@ class ReportTask(BaseModel):
     file_path: str
     status: str
     summary: Optional[str] = None        # Scribe's per-task summary
+    raw_output: Optional[str] = None     # final agent result text
+    execution_log: Optional[str] = None  # full stderr: thinking, tool calls, progress
     error: Optional[str] = None
     depends_on: list[str] = []
     level: int = 0
@@ -77,6 +81,8 @@ class Report(BaseModel):
     succeeded: int = 0
     failed: int = 0
     tasks: list[ReportTask] = []
+    overseer_plan_json: Optional[dict] = None
+    overseer_execution_log: Optional[str] = None
 
 
 # ─── Scribe prompt builder ─────────────────────────────────────
@@ -270,6 +276,8 @@ def _build_report_from_job(job: ScribeJob, scribe_output: dict | None) -> Report
             file_path=t.file_path,
             status=r.status if r else "unknown",
             summary=task_summaries.get(t.id, (r.output_text or "")[:500] if r else None),
+            raw_output=r.output_text if r else None,
+            execution_log=r.execution_log if r else None,
             error=r.error if r else None,
             depends_on=t.depends_on,
             level=level_map.get(t.id, 0),
@@ -293,6 +301,8 @@ def _build_report_from_job(job: ScribeJob, scribe_output: dict | None) -> Report
         succeeded=succeeded,
         failed=failed_count,
         tasks=report_tasks,
+        overseer_plan_json=job.plan_json,
+        overseer_execution_log=job.overseer_raw_output or None,
     )
 
 

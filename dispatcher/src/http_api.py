@@ -10,8 +10,10 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from flask import Flask, jsonify, request
@@ -22,13 +24,11 @@ from src.config import (
     OVERSEER_TIMEOUT_SECONDS,
     VAULT_PATH,
 )
-import time
-
-from src.container_runner import run_raw
+from src.container_runner import run_raw_streaming
 from src.context_resolver import resolve, resolve_batch
 from src.overseer import execute_plan, extract_plan
 from src.overseer_prompt import build_direct_task
-from src.plan_models import OverseerPlan, validate_plan
+from src.plan_models import OverseerPlan, topological_levels, validate_plan
 from src.scribe import ScribeJob, enqueue as scribe_enqueue, get_report, list_reports
 from src.vault_rules import load_vault_rules
 
@@ -36,6 +36,24 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Task tracking ─────────────────────────────────────────────
+
+
+_OUTPUT_TAIL_MAX = 4000  # max chars kept per subtask output tail
+
+
+@dataclass
+class SubtaskProgress:
+    """Live progress for a single sub-task in the plan."""
+    id: str
+    description: str
+    file_path: str
+    level: int = 0
+    status: str = "pending"  # pending | running | completed | failed
+    output: str = ""         # rolling tail of agent output (thinking / tool use)
+    execution_log: str = ""  # full execution log after completion
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 @dataclass
@@ -49,6 +67,15 @@ class DirectTask:
     succeeded: int = 0
     failed: int = 0
     report_id: Optional[str] = None
+    # Live progress fields
+    phase: str = "queued"  # queued | planning | executing | reporting | done
+    overseer_output: str = ""
+    overseer_execution_log: str = ""
+    subtasks: list[SubtaskProgress] = field(default_factory=list)
+    plan_json: Optional[dict] = None
+    created_at: str = ""
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 
 _tasks: dict[str, DirectTask] = {}
@@ -83,11 +110,14 @@ def _execute_direct_task(
     """Background thread: resolve context, run overseer, execute plan."""
     try:
         task.status = "running"
+        task.started_at = datetime.now(timezone.utc).isoformat()
         logger.info("Direct task %s started: %s", task.id, description[:100])
 
         vault_rules = load_vault_rules()
 
-        # Resolve context for scope files
+        # ── Phase: planning ──────────────────────────────────────
+        task.phase = "planning"
+
         if scope_files:
             scope_context = resolve_batch(VAULT_PATH, scope_files)
         else:
@@ -101,22 +131,33 @@ def _execute_direct_task(
         )
 
         logger.info("Direct task %s: running overseer", task.id)
-        exit_code, stdout, stderr = run_raw(
+
+        def _on_overseer_output(chunk: str):
+            task.overseer_output = (task.overseer_output + chunk)[-_OUTPUT_TAIL_MAX:]
+
+        exit_code, result_json, execution_log = run_raw_streaming(
             prompt=prompt,
             max_turns=OVERSEER_MAX_TURNS,
             timeout=OVERSEER_TIMEOUT_SECONDS,
+            on_output=_on_overseer_output,
         )
+
+        task.overseer_execution_log = execution_log or ""
 
         if exit_code != 0:
             task.status = "failed"
-            task.error = (stderr or stdout)[:500]
+            task.phase = "done"
+            task.finished_at = datetime.now(timezone.utc).isoformat()
+            task.error = (execution_log or result_json)[:500]
             logger.error("Direct task %s: overseer failed (exit=%d): %s",
                          task.id, exit_code, task.error)
             return
 
-        plan_data = extract_plan(stdout)
+        plan_data = extract_plan(result_json)
         if plan_data is None:
             task.status = "failed"
+            task.phase = "done"
+            task.finished_at = datetime.now(timezone.utc).isoformat()
             task.error = "Could not parse overseer plan from output"
             logger.error("Direct task %s: %s", task.id, task.error)
             return
@@ -125,20 +166,75 @@ def _execute_direct_task(
         errors = validate_plan(plan)
         if errors:
             task.status = "failed"
+            task.phase = "done"
+            task.finished_at = datetime.now(timezone.utc).isoformat()
             task.error = f"Invalid plan: {errors}"
             logger.error("Direct task %s: %s", task.id, task.error)
             return
 
         if not plan.tasks:
             task.status = "completed"
+            task.phase = "done"
+            task.finished_at = datetime.now(timezone.utc).isoformat()
             logger.info("Direct task %s: overseer returned empty plan", task.id)
             return
 
+        # ── Phase: executing ─────────────────────────────────────
+        task.phase = "executing"
+        task.plan_json = plan_data
         task.task_count = len(plan.tasks)
+
+        # Populate subtask progress from plan
+        levels = topological_levels(plan)
+        level_map: dict[str, int] = {}
+        for level_idx, level_tasks in enumerate(levels):
+            for t in level_tasks:
+                level_map[t.id] = level_idx
+
+        task.subtasks = [
+            SubtaskProgress(
+                id=t.id,
+                description=t.description,
+                file_path=t.file_path,
+                level=level_map.get(t.id, 0),
+            )
+            for t in plan.tasks
+        ]
+
         logger.info("Direct task %s: executing plan with %d tasks", task.id, task.task_count)
 
+        # Callbacks to update subtask progress in real-time
+        def _on_task_start(task_id: str):
+            for st in task.subtasks:
+                if st.id == task_id:
+                    st.status = "running"
+                    st.started_at = datetime.now(timezone.utc).isoformat()
+                    break
+
+        def _on_task_finish(task_id: str, result):
+            for st in task.subtasks:
+                if st.id == task_id:
+                    st.status = result.status
+                    st.error = result.error
+                    st.execution_log = getattr(result, 'execution_log', '') or ''
+                    st.finished_at = datetime.now(timezone.utc).isoformat()
+                    break
+            task.succeeded = sum(1 for s in task.subtasks if s.status == "completed")
+            task.failed = sum(1 for s in task.subtasks if s.status == "failed")
+
+        def _on_task_output(task_id: str, chunk: str):
+            for st in task.subtasks:
+                if st.id == task_id:
+                    st.output = (st.output + chunk)[-_OUTPUT_TAIL_MAX:]
+                    break
+
         t_start = time.time()
-        results = execute_plan(plan, auto_commit_fn)
+        results = execute_plan(
+            plan, auto_commit_fn,
+            on_task_start=_on_task_start,
+            on_task_finish=_on_task_finish,
+            on_task_output=_on_task_output,
+        )
         duration = time.time() - t_start
 
         task.succeeded = sum(1 for r in results.values() if r.status == "completed")
@@ -150,7 +246,16 @@ def _execute_direct_task(
         logger.info("Direct task %s finished: %d/%d succeeded",
                      task.id, task.succeeded, task.task_count)
 
-        # Enqueue Scribe report (fire-and-forget)
+        # Auto-commit any files the agents changed
+        try:
+            auto_commit_fn(f"direct-task/{task.id}", task.status)
+        except Exception:
+            logger.exception("Auto-commit failed for direct task %s", task.id)
+
+        # ── Phase: reporting ─────────────────────────────────────
+        task.phase = "reporting"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
+
         try:
             scribe_enqueue(ScribeJob(
                 plan=plan,
@@ -159,17 +264,59 @@ def _execute_direct_task(
                 source_detail=source_detail or {"task_id": task.id},
                 description=description[:200],
                 duration_seconds=duration,
+                overseer_raw_output=task.overseer_output,
+                plan_json=plan_data,
             ))
         except Exception:
             logger.exception("Failed to enqueue Scribe job for direct task %s", task.id)
 
+        task.phase = "done"
+
     except Exception as e:
         logger.exception("Direct task %s crashed", task.id)
         task.status = "failed"
+        task.phase = "done"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
         task.error = str(e)
 
 
 # ─── Flask app ──────────────────────────────────────────────────
+
+
+def _serialize_task(task: DirectTask) -> dict:
+    """Serialize a DirectTask for API responses, including live progress."""
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "phase": task.phase,
+        "description": task.description,
+        "error": task.error,
+        "task_count": task.task_count,
+        "succeeded": task.succeeded,
+        "failed": task.failed,
+        "report_id": task.report_id,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "finished_at": task.finished_at,
+        "overseer_output": task.overseer_output[-3000:] if task.overseer_output else "",
+        "overseer_execution_log": task.overseer_execution_log,
+        "plan_json": task.plan_json,
+        "subtasks": [
+            {
+                "id": st.id,
+                "description": st.description,
+                "file_path": st.file_path,
+                "level": st.level,
+                "status": st.status,
+                "output": st.output,
+                "execution_log": st.execution_log,
+                "error": st.error,
+                "started_at": st.started_at,
+                "finished_at": st.finished_at,
+            }
+            for st in task.subtasks
+        ],
+    }
 
 
 def create_app(auto_commit_fn) -> Flask:
@@ -198,6 +345,7 @@ def create_app(auto_commit_fn) -> Flask:
         task = DirectTask(
             id=str(uuid.uuid4())[:8],
             description=description[:500],
+            created_at=datetime.now(timezone.utc).isoformat(),
         )
         _store_task(task)
 
@@ -217,16 +365,27 @@ def create_app(auto_commit_fn) -> Flask:
         task = _get_task(task_id)
         if not task:
             return jsonify({"error": "not found"}), 404
+        return jsonify(_serialize_task(task))
+
+    @app.route("/api/tasks/active", methods=["GET"])
+    def get_active_tasks():
+        with _tasks_lock:
+            active = [t for t in _tasks.values()
+                       if t.status in ("queued", "running")]
         return jsonify({
-            "task_id": task.id,
-            "status": task.status,
-            "description": task.description,
-            "error": task.error,
-            "task_count": task.task_count,
-            "succeeded": task.succeeded,
-            "failed": task.failed,
-            "report_id": task.report_id,
+            "tasks": [_serialize_task(t) for t in active],
         })
+
+    @app.route("/api/claude-changes", methods=["GET"])
+    def get_claude_changes():
+        from src.claude_changes import get_changed_files
+        return jsonify({"files": get_changed_files()})
+
+    @app.route("/api/claude-changes/clear", methods=["POST"])
+    def clear_claude_changes():
+        from src.claude_changes import clear_changed_files
+        clear_changed_files()
+        return jsonify({"status": "cleared"})
 
     @app.route("/api/reports", methods=["GET"])
     def list_reports_endpoint():

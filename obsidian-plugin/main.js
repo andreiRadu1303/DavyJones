@@ -23,6 +23,7 @@ const HISTORY_VIEW_TYPE = "davyjones-history";
 const CONTROL_VIEW_TYPE = "davyjones-control";
 const REPORTS_VIEW_TYPE = "davyjones-reports";
 const CALENDAR_VIEW_TYPE = "davyjones-calendar";
+const LIVE_TASKS_VIEW_TYPE = "davyjones-live-tasks";
 const HISTORY_PAGE_SIZE = 20;
 const REPORTS_PAGE_SIZE = 20;
 const CAL_COLORS = ["#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
@@ -36,6 +37,10 @@ class DavyJonesPlugin extends Plugin {
     this._committing = false;
     this._commitDone = false;
     this._commitDoneTimer = null;
+
+    // ── File explorer decorations: files touched by Claude agents ──
+    this._claudeTouchedFiles = new Set();  // vault-relative paths
+    this._decorateDebounceTimer = null;
 
     // Commit
     this.addRibbonIcon("git-commit-horizontal", "DavyJones: Commit", () => this.commitChanges());
@@ -62,6 +67,11 @@ class DavyJonesPlugin extends Plugin {
     this.registerView(REPORTS_VIEW_TYPE, (leaf) => new DavyJonesReportsView(leaf, this));
     this.addRibbonIcon("file-text", "DavyJones: Agent Reports", () => this._activateReportsView());
     this.addCommand({ id: "open-reports", name: "View agent execution reports", callback: () => this._activateReportsView() });
+
+    // Live Tasks
+    this.registerView(LIVE_TASKS_VIEW_TYPE, (leaf) => new DavyJonesLiveTasksView(leaf, this));
+    this.addRibbonIcon("activity", "DavyJones: Live Tasks", () => this._activateLiveTasksView());
+    this.addCommand({ id: "open-live-tasks", name: "View active agent tasks", callback: () => this._activateLiveTasksView() });
 
     // Calendar
     this.registerView(CALENDAR_VIEW_TYPE, (leaf) => new DavyJonesCalendarView(leaf, this));
@@ -97,6 +107,30 @@ class DavyJonesPlugin extends Plugin {
     }));
     this.app.workspace.onLayoutReady(() => this.renderUI());
 
+    // ── File explorer decoration: mark files touched by Claude agents ──
+    // Poll dispatcher API for changed files instead of parsing git
+    this.app.workspace.onLayoutReady(() => {
+      setTimeout(() => this._pollClaudeChanges(), 1000);
+    });
+    // Re-apply decorations when file explorer re-renders (e.g. folder expand/collapse)
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      if (this._claudeTouchedFiles.size > 0) this._debouncedDecorate();
+    }));
+    // Command to clear decorations
+    this.addCommand({
+      id: "clear-claude-markers",
+      name: "Clear Claude file change markers",
+      callback: async () => {
+        try {
+          await fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" });
+        } catch {}
+        this._claudeTouchedFiles.clear();
+        this._decorateFileExplorer();
+        new Notice("Cleared Claude file markers");
+      },
+    });
+
+
     // Settings tab
     this.addSettingTab(new DavyJonesSettingTab(this.app, this));
 
@@ -121,15 +155,157 @@ class DavyJonesPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
         if (leaf.view && leaf.view.refresh) leaf.view.refresh();
       }
+      // Refresh live tasks if open (has its own faster interval, but catch stale views)
+      for (const leaf of this.app.workspace.getLeavesOfType(LIVE_TASKS_VIEW_TYPE)) {
+        if (leaf.view && leaf.view.refresh) leaf.view.refresh();
+      }
+      // Poll for Claude-changed files & re-apply file explorer decorations
+      this._pollClaudeChanges();
     }, 15000));
   }
 
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
+    this._claudeTouchedFiles.clear();
+    this._decorateFileExplorer(); // remove all markers
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(CONTROL_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(REPORTS_VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(CALENDAR_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(LIVE_TASKS_VIEW_TYPE);
+  }
+
+  // ── File Explorer Decoration ──────────────────────────────────
+
+  _debouncedDecorate() {
+    clearTimeout(this._decorateDebounceTimer);
+    this._decorateDebounceTimer = setTimeout(() => this._decorateFileExplorer(), 150);
+  }
+
+  _decorateFileExplorer() {
+    const leaves = this.app.workspace.getLeavesOfType("file-explorer");
+    if (!leaves.length) return;
+
+    const explorer = leaves[0].view;
+    const fileItems = explorer.fileItems;
+    if (!fileItems) return;
+
+    // Build ancestor folder set
+    const touchedFolders = new Set();
+    for (const filePath of this._claudeTouchedFiles) {
+      let dir = filePath;
+      while (true) {
+        const sep = dir.lastIndexOf("/");
+        if (sep <= 0) break;
+        dir = dir.substring(0, sep);
+        touchedFolders.add(dir);
+      }
+    }
+
+    const entries = fileItems instanceof Map
+      ? Array.from(fileItems.entries())
+      : Object.entries(fileItems);
+
+    let decorated = 0;
+    let debugOnce = this._claudeTouchedFiles.size > 0 && !this._debuggedFileItem;
+
+    for (const [itemPath, item] of entries) {
+      const el = item.selfEl || item.el;
+      if (!el) continue;
+
+      // Debug: log DOM structure of first matched item
+      if (debugOnce && this._claudeTouchedFiles.has(itemPath)) {
+        console.log("[DavyJones] DEBUG fileItem key:", itemPath);
+        console.log("[DavyJones] DEBUG el tagName:", el.tagName, "classes:", el.className);
+        console.log("[DavyJones] DEBUG el innerHTML (first 500):", el.innerHTML.substring(0, 500));
+        this._debuggedFileItem = true;
+      }
+
+      // Find the title element — try Obsidian's various DOM structures
+      const titleEl = el.querySelector(".nav-file-title")
+        || el.querySelector(".nav-folder-title")
+        || el.querySelector(".tree-item-inner")
+        || el.querySelector("[data-path]");
+
+      const isFile = this._claudeTouchedFiles.has(itemPath);
+      const isAncestor = touchedFolders.has(itemPath);
+
+      // Remove old markers first
+      el.querySelectorAll(".davyjones-claude-indicator").forEach(d => d.remove());
+      el.classList.remove("davyjones-claude-touched", "davyjones-claude-touched-ancestor");
+      const target = titleEl || el;
+      // Clear previous inline styles
+      if (target.style.borderLeft && target.style.borderLeft.includes("124")) {
+        target.style.background = "";
+        target.style.borderLeft = "";
+        target.style.borderRadius = "";
+      }
+
+      const sparkleSvg = '<svg viewBox="0 0 24 24"><path d="M12 0L14.59 8.41L23 12L14.59 15.59L12 24L9.41 15.59L1 12L9.41 8.41Z"/></svg>';
+
+      if (isFile) {
+        el.classList.add("davyjones-claude-touched");
+        target.style.background = "linear-gradient(90deg, rgba(124, 58, 237, 0.15) 0%, transparent 100%)";
+        target.style.borderLeft = "2px solid rgb(168, 130, 255)";
+        target.style.borderRadius = "0 4px 4px 0";
+        // Add sparkle indicator on the right
+        const indicator = document.createElement("span");
+        indicator.className = "davyjones-claude-indicator";
+        indicator.innerHTML = sparkleSvg;
+        indicator.setAttribute("aria-label", "Modified by Claude");
+        (titleEl || el).appendChild(indicator);
+        decorated++;
+      } else if (isAncestor) {
+        el.classList.add("davyjones-claude-touched-ancestor");
+        target.style.borderLeft = "2px solid rgba(168, 130, 255, 0.2)";
+        // Count how many touched files are inside this folder
+        const prefix = itemPath + "/";
+        let count = 0;
+        for (const f of this._claudeTouchedFiles) {
+          if (f.startsWith(prefix)) count++;
+        }
+        const indicator = document.createElement("span");
+        indicator.className = "davyjones-claude-indicator";
+        indicator.innerHTML = sparkleSvg + (count > 0 ? `<span class="davyjones-count">${count}</span>` : "");
+        indicator.setAttribute("aria-label", `${count} file${count !== 1 ? "s" : ""} modified by Claude`);
+        (titleEl || el).appendChild(indicator);
+        decorated++;
+      }
+    }
+    if (this._claudeTouchedFiles.size > 0) {
+      console.log("[DavyJones] Decorated", decorated, "/", this._claudeTouchedFiles.size, "files");
+    }
+  }
+
+  /**
+   * Poll the dispatcher API for files changed by Claude auto-commits.
+   */
+  async _pollClaudeChanges() {
+    try {
+      const resp = await fetch(`${this._apiBase()}/api/claude-changes`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const files = data.files || [];
+
+      const newTouched = new Set(files.filter(f => !f.startsWith(".")));
+
+      // Always decorate if we have files (handles re-renders, layout changes)
+      if (newTouched.size > 0) {
+        const oldKey = Array.from(this._claudeTouchedFiles).sort().join("|");
+        const newKey = Array.from(newTouched).sort().join("|");
+        if (oldKey !== newKey) {
+          console.log("[DavyJones] Claude-touched files updated:", Array.from(newTouched));
+        }
+        this._claudeTouchedFiles = newTouched;
+        this._decorateFileExplorer();
+      } else if (this._claudeTouchedFiles.size > 0) {
+        // Files were cleared
+        this._claudeTouchedFiles = newTouched;
+        this._decorateFileExplorer();
+      }
+    } catch {
+      // dispatcher unreachable — ignore
+    }
   }
 
   async _activateHistoryView() {
@@ -165,6 +341,17 @@ class DavyJonesPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  async _activateLiveTasksView() {
+    const existing = this.app.workspace.getLeavesOfType(LIVE_TASKS_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({ type: LIVE_TASKS_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
   async _activateCalendarView() {
     const existing = this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE);
     if (existing.length) {
@@ -189,6 +376,12 @@ class DavyJonesPlugin extends Plugin {
   }
 
   // ─── .davyjones.env read/write ──────────────────────────────
+
+  _apiBase() {
+    const env = this._readDavyJonesEnv();
+    const port = env.HTTP_PORT || "5555";
+    return `http://localhost:${port}`;
+  }
 
   _readDavyJonesEnv() {
     const envPath = path.join(this._vaultPath, ".davyjones.env");
@@ -746,6 +939,260 @@ class DavyJonesPlugin extends Plugin {
 
 // ─── Task Modal ───────────────────────────────────────────────
 
+// ─── Execution Log Modal ──────────────────────────────────────
+
+class DavyJonesExecutionLogModal extends Modal {
+  constructor(app, data) {
+    super(app);
+    this._data = data; // { title, status, log, result? }
+    this._maximized = false;
+    this._preMaxRect = null;
+  }
+
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    contentEl.addClass("davyjones-execlog-modal");
+    modalEl.addClass("davyjones-execlog-modal-container");
+
+    // Position the modal as a free-floating window within the viewport
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const initW = Math.min(vw * 0.85, 1100);
+    const initH = vh * 0.85;
+    modalEl.style.position = "fixed";
+    modalEl.style.width = initW + "px";
+    modalEl.style.height = initH + "px";
+    modalEl.style.left = ((vw - initW) / 2) + "px";
+    modalEl.style.top = ((vh - initH) / 2) + "px";
+    modalEl.style.maxWidth = "none";
+    modalEl.style.maxHeight = "none";
+    modalEl.style.margin = "0";
+    modalEl.style.transform = "none";
+    modalEl.style.zIndex = "9999";
+
+    // ── Title bar (drag to move, buttons for maximize/close) ──
+    const titleBar = modalEl.createDiv({ cls: "davyjones-execlog-titlebar" });
+    // Move it before .modal-content so it sits at the top
+    modalEl.insertBefore(titleBar, modalEl.querySelector(".modal-content") || modalEl.firstChild);
+    const titleLeft = titleBar.createDiv({ cls: "davyjones-execlog-titlebar-text" });
+    titleLeft.createEl("span", { text: "Execution Log" });
+    titleLeft.createEl("span", {
+      cls: `davyjones-prop-badge davyjones-s-${this._data.status}`,
+      text: this._data.status,
+    });
+
+    const titleBtns = titleBar.createDiv({ cls: "davyjones-execlog-titlebar-btns" });
+    const maximizeBtn = titleBtns.createEl("button", {
+      cls: "davyjones-execlog-wbtn",
+      attr: { "aria-label": "Maximize" },
+    });
+    maximizeBtn.innerHTML = "&#9744;"; // □
+    maximizeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._toggleMaximize(modalEl, maximizeBtn);
+    });
+    const closeBtn = titleBtns.createEl("button", {
+      cls: "davyjones-execlog-wbtn davyjones-execlog-wbtn-close",
+      attr: { "aria-label": "Close" },
+    });
+    closeBtn.innerHTML = "&#10005;"; // ✕
+    closeBtn.addEventListener("click", (e) => { e.stopPropagation(); this.close(); });
+
+    // Drag-to-move via title bar
+    this._setupDrag(titleBar, modalEl);
+
+    // ── Content: subtitle + log entries ──
+    contentEl.createEl("div", {
+      cls: "davyjones-execlog-title",
+      text: this._data.title,
+    });
+
+    // Parse structured log entries — group continuation lines with their parent
+    const log = this._data.log || "(no execution log available)";
+    const lines = log.split("\n");
+    const isTagged = (l) => /^\[(tool_use|tool_result|result|agent)\]/.test(l);
+
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) { i++; continue; }
+
+      if (line.startsWith("[tool_use]")) {
+        const entry = contentEl.createDiv({ cls: "davyjones-execlog-entry davyjones-execlog-tool-use" });
+        const label = line.replace(/^\[tool_use\]\s*/, "");
+        const colonIdx = label.indexOf(":");
+        if (colonIdx > 0) {
+          entry.createEl("span", { cls: "davyjones-execlog-tool-name", text: label.slice(0, colonIdx) });
+          const args = label.slice(colonIdx + 1).trim();
+          if (args) entry.createEl("span", { cls: "davyjones-execlog-tool-args", text: args });
+        } else {
+          entry.createEl("span", { cls: "davyjones-execlog-tool-name", text: label });
+        }
+        i++;
+      } else if (line.startsWith("[tool_result]")) {
+        const parts = [line.replace(/^\[tool_result\]\s*/, "")];
+        i++;
+        while (i < lines.length && !isTagged(lines[i])) {
+          parts.push(lines[i]);
+          i++;
+        }
+        const content = parts.join("\n").trim();
+        const entry = contentEl.createDiv({ cls: "davyjones-execlog-entry davyjones-execlog-tool-result" });
+        if (content) {
+          entry.createEl("pre", { text: content });
+        } else {
+          entry.createEl("span", { cls: "davyjones-execlog-empty-result", text: "(empty)" });
+        }
+      } else if (line.startsWith("[result]")) {
+        contentEl.createDiv({ cls: "davyjones-execlog-entry davyjones-execlog-result-line", text: line });
+        i++;
+      } else if (line.startsWith("[agent]")) {
+        contentEl.createDiv({ cls: "davyjones-execlog-entry davyjones-execlog-agent-line", text: line });
+        i++;
+      } else {
+        const textParts = [line];
+        i++;
+        while (i < lines.length && lines[i].trim() && !isTagged(lines[i])) {
+          textParts.push(lines[i]);
+          i++;
+        }
+        contentEl.createDiv({ cls: "davyjones-execlog-entry davyjones-execlog-text", text: textParts.join("\n") });
+      }
+    }
+
+    // Final Result section
+    if (this._data.result) {
+      const sep = contentEl.createDiv({ cls: "davyjones-execlog-result-label" });
+      sep.createEl("span", { text: "FINAL RESULT" });
+      contentEl.createEl("div", {
+        cls: "davyjones-execlog-result",
+        text: this._data.result,
+      });
+    }
+
+    // ── Edge resize handles ──
+    for (const edge of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {
+      const handle = modalEl.createDiv({ cls: `davyjones-execlog-resize davyjones-execlog-resize-${edge}` });
+      this._setupResize(handle, modalEl, edge);
+    }
+  }
+
+  // ── Maximize / restore ──
+  _toggleMaximize(el, btn) {
+    if (this._maximized) {
+      // Restore
+      const r = this._preMaxRect;
+      el.style.left = r.left + "px";
+      el.style.top = r.top + "px";
+      el.style.width = r.width + "px";
+      el.style.height = r.height + "px";
+      el.classList.remove("davyjones-execlog-maximized");
+      btn.innerHTML = "&#9744;";
+      this._maximized = false;
+    } else {
+      // Save current rect then maximize
+      this._preMaxRect = {
+        left: el.offsetLeft, top: el.offsetTop,
+        width: el.offsetWidth, height: el.offsetHeight,
+      };
+      el.style.left = "0";
+      el.style.top = "0";
+      el.style.width = "100vw";
+      el.style.height = "100vh";
+      el.classList.add("davyjones-execlog-maximized");
+      btn.innerHTML = "&#9723;";
+      this._maximized = true;
+    }
+  }
+
+  // ── Drag-to-move (clamped to viewport) ──
+  _setupDrag(handle, el) {
+    let startX, startY, startLeft, startTop;
+    const onMouseMove = (e) => {
+      let newLeft = startLeft + e.clientX - startX;
+      let newTop = startTop + e.clientY - startY;
+      // Keep fully within viewport
+      const w = el.offsetWidth, h = el.offsetHeight;
+      newLeft = Math.max(0, Math.min(window.innerWidth - w, newLeft));
+      newTop = Math.max(0, Math.min(window.innerHeight - h, newTop));
+      el.style.left = newLeft + "px";
+      el.style.top = newTop + "px";
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    handle.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) return; // don't drag from buttons
+      if (this._maximized) return;
+      e.preventDefault();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = el.offsetLeft; startTop = el.offsetTop;
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+    // Double-click to toggle maximize
+    handle.addEventListener("dblclick", () => {
+      const btn = el.querySelector(".davyjones-execlog-wbtn:not(.davyjones-execlog-wbtn-close)");
+      this._toggleMaximize(el, btn);
+    });
+  }
+
+  // ── Edge/corner resize (clamped to viewport) ──
+  _setupResize(handle, el, edge) {
+    let startX, startY, startRect;
+    const onMouseMove = (e) => {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const minW = 360, minH = 250;
+      const vw = window.innerWidth, vh = window.innerHeight;
+
+      if (edge.includes("e")) {
+        const maxW = vw - startRect.left;
+        el.style.width = Math.min(maxW, Math.max(minW, startRect.width + dx)) + "px";
+      }
+      if (edge.includes("w")) {
+        const maxExpand = startRect.left;
+        const clampedDx = Math.min(maxExpand, -dx);
+        const newW = Math.max(minW, startRect.width + clampedDx);
+        el.style.width = newW + "px";
+        el.style.left = (startRect.left + startRect.width - newW) + "px";
+      }
+      if (edge.includes("s")) {
+        const maxH = vh - startRect.top;
+        el.style.height = Math.min(maxH, Math.max(minH, startRect.height + dy)) + "px";
+      }
+      if (edge.includes("n")) {
+        const maxExpand = startRect.top;
+        const clampedDy = Math.min(maxExpand, -dy);
+        const newH = Math.max(minH, startRect.height + clampedDy);
+        el.style.height = newH + "px";
+        el.style.top = (startRect.top + startRect.height - newH) + "px";
+      }
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+    };
+    handle.addEventListener("mousedown", (e) => {
+      if (this._maximized) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX; startY = e.clientY;
+      startRect = { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight };
+      document.body.style.cursor = getComputedStyle(handle).cursor;
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+// ─── Task Modal ──────────────────────────────────────────────
+
 class DavyJonesTaskModal extends Modal {
   constructor(app, plugin) {
     super(app);
@@ -858,6 +1305,7 @@ class DavyJonesTaskModal extends Modal {
       const result = await resp.json();
       new Notice(`Task sent (${result.task_id}). Agents will handle it.`);
       this.close();
+      this.plugin._activateLiveTasksView();
     } catch (e) {
       new Notice("Could not reach dispatcher. Is DavyJones running?");
       console.error("DavyJones task submit error:", e);
@@ -888,6 +1336,218 @@ class DavyJonesTaskModal extends Modal {
 }
 
 // ─── Reports View ────────────────────────────────────────────
+
+// ─── Live Tasks View ────────────────────────────────────────────
+
+const LIVE_PHASES = ["planning", "executing", "reporting", "done"];
+
+class DavyJonesLiveTasksView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._tasks = [];
+    this._expandedTasks = new Set();
+    this._expandedSubtasks = new Set();
+    this._expandedSections = new Set(); // "taskId:overseer" etc.
+    this._pollInterval = null;
+    this._lastJson = "";
+  }
+
+  getViewType() { return LIVE_TASKS_VIEW_TYPE; }
+  getDisplayText() { return "Live Tasks"; }
+  getIcon() { return "activity"; }
+
+  async onOpen() {
+    this.contentEl.empty();
+    this.contentEl.addClass("davyjones-live-root");
+    this._fetchAndRender();
+    this._pollInterval = window.setInterval(() => this._fetchAndRender(), 3000);
+  }
+
+  async onClose() {
+    if (this._pollInterval) {
+      window.clearInterval(this._pollInterval);
+      this._pollInterval = null;
+    }
+    this.contentEl.empty();
+  }
+
+  refresh() { this._fetchAndRender(); }
+
+  _apiBase() {
+    const env = this.plugin._readDavyJonesEnv();
+    const port = env.HTTP_PORT || "5555";
+    return `http://localhost:${port}`;
+  }
+
+  async _fetchAndRender() {
+    try {
+      const resp = await fetch(`${this._apiBase()}/api/tasks/active`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const json = JSON.stringify(data.tasks);
+      if (json === this._lastJson) return; // no changes
+      this._lastJson = json;
+      this._tasks = data.tasks || [];
+    } catch { /* dispatcher offline */ }
+    this._render();
+  }
+
+  _render() {
+    this.contentEl.empty();
+
+    const header = this.contentEl.createDiv({ cls: "davyjones-live-header" });
+    header.createEl("h4", { text: "Live Tasks" });
+    if (this._tasks.length > 0) {
+      header.createDiv({ cls: "davyjones-live-pulse" });
+    }
+
+    if (this._tasks.length === 0) {
+      this.contentEl.createEl("p", {
+        text: "No active tasks. Submit a task to see live progress.",
+        cls: "davyjones-live-empty",
+      });
+      return;
+    }
+
+    const list = this.contentEl.createDiv();
+
+    for (const task of this._tasks) {
+      const card = list.createDiv({ cls: "davyjones-live-card" });
+      const isExpanded = this._expandedTasks.has(task.task_id);
+
+      // Main row
+      const row = card.createDiv({ cls: "davyjones-live-card-row" });
+      row.createEl("span", { cls: "davyjones-live-toggle", text: isExpanded ? "\u25BE" : "\u25B8" });
+
+      const phaseBadge = task.phase === "done" ? task.status : task.phase;
+      const phaseClass = task.phase === "done"
+        ? `davyjones-s-${task.status}`
+        : `davyjones-s-${task.phase}`;
+      row.createEl("span", { cls: `davyjones-prop-badge ${phaseClass}`, text: phaseBadge });
+
+      const desc = task.description.length > 50 ? task.description.slice(0, 50) + "..." : task.description;
+      row.createEl("span", { cls: "davyjones-live-desc", text: desc });
+
+      // Progress counter
+      if (task.subtasks && task.subtasks.length > 0) {
+        const done = task.subtasks.filter(s => s.status === "completed" || s.status === "failed").length;
+        row.createEl("span", {
+          cls: "davyjones-reports-task-count",
+          text: `${done}/${task.subtasks.length}`,
+        });
+      }
+
+      // Elapsed time
+      if (task.started_at) {
+        row.createEl("span", { cls: "davyjones-live-elapsed", text: this._elapsed(task.started_at) });
+      }
+
+      row.addEventListener("click", () => {
+        if (this._expandedTasks.has(task.task_id)) {
+          this._expandedTasks.delete(task.task_id);
+        } else {
+          this._expandedTasks.add(task.task_id);
+        }
+        this._render();
+      });
+
+      if (!isExpanded) continue;
+
+      // Phase progress bar
+      const phasesDiv = card.createDiv({ cls: "davyjones-live-phases" });
+      for (const p of LIVE_PHASES) {
+        const idx = LIVE_PHASES.indexOf(p);
+        const currentIdx = LIVE_PHASES.indexOf(task.phase);
+        let cls = "davyjones-live-phase-step";
+        if (task.phase === p) cls += " is-active";
+        else if (idx < currentIdx || task.phase === "done") cls += " is-done";
+        phasesDiv.createEl("span", { cls, text: p });
+      }
+
+      // Overseer output section
+      if (task.overseer_output) {
+        const osKey = `${task.task_id}:overseer`;
+        const osExpanded = this._expandedSections.has(osKey);
+        const section = card.createDiv({ cls: "davyjones-live-section" });
+        const label = section.createDiv({
+          cls: "davyjones-live-section-label",
+          text: (osExpanded ? "\u25BE " : "\u25B8 ") + "Overseer Output",
+        });
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (this._expandedSections.has(osKey)) this._expandedSections.delete(osKey);
+          else this._expandedSections.add(osKey);
+          this._render();
+        });
+        if (osExpanded) {
+          section.createEl("pre", { cls: "davyjones-live-output", text: task.overseer_output });
+        }
+      }
+
+      // Subtasks
+      if (task.subtasks && task.subtasks.length > 0) {
+        const subtasksDiv = card.createDiv({ cls: "davyjones-live-subtasks" });
+
+        // Group by level
+        const levels = {};
+        for (const st of task.subtasks) {
+          const lv = st.level || 0;
+          if (!levels[lv]) levels[lv] = [];
+          levels[lv].push(st);
+        }
+
+        for (const [level, sts] of Object.entries(levels).sort(([a], [b]) => a - b)) {
+          if (Object.keys(levels).length > 1) {
+            subtasksDiv.createDiv({ cls: "davyjones-live-level-label", text: `Level ${level}` });
+          }
+
+          for (const st of sts) {
+            const stKey = `${task.task_id}:${st.id}`;
+            const stExpanded = this._expandedSubtasks.has(stKey);
+
+            const stRow = subtasksDiv.createDiv({ cls: "davyjones-live-subtask-row" });
+            stRow.createEl("span", { cls: "davyjones-reports-toggle", text: stExpanded ? "\u25BE" : "\u25B8" });
+            stRow.createEl("span", {
+              cls: `davyjones-prop-badge davyjones-s-${st.status}`,
+              text: st.status,
+            });
+            stRow.createEl("span", { cls: "davyjones-live-subtask-desc", text: st.description });
+            stRow.createEl("span", { cls: "davyjones-live-subtask-file", text: st.file_path });
+
+            if (st.started_at && st.status === "running") {
+              stRow.createEl("span", { cls: "davyjones-live-elapsed", text: this._elapsed(st.started_at) });
+            }
+
+            stRow.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (this._expandedSubtasks.has(stKey)) this._expandedSubtasks.delete(stKey);
+              else this._expandedSubtasks.add(stKey);
+              this._render();
+            });
+
+            if (stExpanded) {
+              const outputText = st.error
+                ? `Error: ${st.error}`
+                : st.output || "(waiting for output...)";
+              subtasksDiv.createEl("pre", { cls: "davyjones-live-output", text: outputText });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  _elapsed(isoStr) {
+    const secs = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return `${mins}m ${rem}s`;
+  }
+}
+
+// ─── Reports View ─────────────────────────────────────────────
 
 class DavyJonesReportsView extends ItemView {
   constructor(leaf, plugin) {
@@ -1020,6 +1680,44 @@ class DavyJonesReportsView extends ItemView {
             text: `Duration: ${detail.duration_seconds.toFixed(1)}s | Source: ${detail.source}`,
           });
 
+          // Overseer plan section (collapsible)
+          if (detail.overseer_plan_json) {
+            const planKey = `${report.id}:overseer-plan`;
+            const planExpanded = this._expandedTasks.has(planKey);
+            const planToggle = detailDiv.createDiv({
+              cls: "davyjones-reports-section-toggle",
+              text: (planExpanded ? "\u25BE " : "\u25B8 ") + "Overseer Plan",
+            });
+            planToggle.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (this._expandedTasks.has(planKey)) this._expandedTasks.delete(planKey);
+              else this._expandedTasks.add(planKey);
+              this._renderReports();
+            });
+            if (planExpanded) {
+              const planTasks = detail.overseer_plan_json.tasks || [];
+              let planText = planTasks.map((t, i) =>
+                `${i + 1}. [${t.id}] ${t.description}\n   file: ${t.file_path}${t.depends_on && t.depends_on.length ? `\n   depends: ${t.depends_on.join(", ")}` : ""}`
+              ).join("\n\n");
+              detailDiv.createEl("pre", { cls: "davyjones-reports-raw-output", text: planText || "(empty plan)" });
+
+              if (detail.overseer_execution_log) {
+                const osLogBtn = detailDiv.createEl("button", {
+                  text: "\u{1F4CB} View Overseer Log",
+                  cls: "davyjones-reports-log-btn",
+                });
+                osLogBtn.addEventListener("click", (e) => {
+                  e.stopPropagation();
+                  new DavyJonesExecutionLogModal(this.app, {
+                    title: "Overseer",
+                    status: report.status,
+                    log: detail.overseer_execution_log,
+                  }).open();
+                });
+              }
+            }
+          }
+
           if (detail.tasks) {
             const tasksDiv = detailDiv.createDiv({ cls: "davyjones-reports-tasks" });
             for (const task of detail.tasks) {
@@ -1045,8 +1743,31 @@ class DavyJonesReportsView extends ItemView {
               });
 
               if (taskExpanded) {
-                const outputText = task.error ? `Error: ${task.error}` : task.summary || "(no output)";
-                tasksDiv.createEl("pre", { cls: "davyjones-reports-output", text: outputText });
+                const expandedDiv = tasksDiv.createDiv({ cls: "davyjones-reports-task-expanded" });
+
+                // Summary text
+                const summaryText = task.summary || task.raw_output || "(no output)";
+                if (task.error) {
+                  expandedDiv.createEl("div", { cls: "davyjones-reports-task-error", text: `Error: ${task.error}` });
+                }
+                expandedDiv.createEl("pre", { cls: "davyjones-reports-raw-output", text: summaryText });
+
+                // "View Execution Log" button — opens the full stderr document
+                if (task.execution_log) {
+                  const logBtn = expandedDiv.createEl("button", {
+                    text: "\u{1F4CB} View Execution Log",
+                    cls: "davyjones-reports-log-btn",
+                  });
+                  logBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    new DavyJonesExecutionLogModal(this.app, {
+                      title: `${task.id}: ${task.description}`,
+                      status: task.status,
+                      log: task.execution_log,
+                      result: task.raw_output,
+                    }).open();
+                  });
+                }
               }
             }
           }

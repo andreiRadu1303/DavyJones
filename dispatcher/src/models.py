@@ -27,3 +27,4 @@ class TaskResult(BaseModel):
     files_modified: list[str] = []
     error: Optional[str] = None
     hit_max_turns: bool = False
+    execution_log: Optional[str] = None  # full stderr (thinking, tool calls)

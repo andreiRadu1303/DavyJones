@@ -43,16 +43,26 @@ def update_status(
 ) -> None:
     """Update the status field in a task file's YAML frontmatter.
 
+    Only modifies files that have `type: task` or `type: job` in their
+    frontmatter. Regular vault files are left untouched — we don't want
+    to inject status metadata into a user's game notes or other content.
+
     file_path is relative to VAULT_PATH.
     """
     full_path = os.path.join(VAULT_PATH, file_path)
     if not os.path.isfile(full_path):
-        logger.error("Cannot update status: file not found: %s", file_path)
         return
 
     _acquire_lock()
     try:
         post = frontmatter.load(full_path)
+
+        # Only update files that are actually task/job files
+        file_type = post.metadata.get("type", "")
+        if file_type not in ("task", "job"):
+            logger.debug("Skipping status update for %s (type=%r, not a task file)", file_path, file_type)
+            return
+
         post.metadata["status"] = new_status
 
         if new_status == "completed":

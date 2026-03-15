@@ -22,6 +22,7 @@ from src.git_watcher import (
 )
 from src.overseer import execute_plan, gather_commit_data, run_overseer
 from src.scribe import ScribeJob, enqueue as scribe_enqueue
+from src.claude_changes import record_changed_files
 from src.status_updater import _acquire_lock, _release_lock, update_status
 from src.task_builder import build
 
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Track in-flight tasks so we don't double-dispatch
 _active_tasks: set[str] = set()
 _active_lock = threading.Lock()
+
 
 
 def _auto_commit(file_path: str, status: str) -> None:
@@ -58,6 +60,18 @@ def _auto_commit(file_path: str, status: str) -> None:
         )
         if result.returncode == 0:
             logger.info("Auto-committed: %s", msg)
+            # Capture which files this commit changed
+            try:
+                diff_result = subprocess.run(
+                    ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+                    cwd=VAULT_PATH, capture_output=True, encoding="utf8", timeout=5,
+                )
+                if diff_result.returncode == 0:
+                    changed = [f.strip() for f in diff_result.stdout.strip().split("\n") if f.strip()]
+                    record_changed_files(changed)
+                    logger.info("Claude changed files: %s", changed)
+            except Exception:
+                logger.exception("Failed to get changed files from commit")
         else:
             stderr = result.stderr.decode().strip()
             if "nothing to commit" in stderr:

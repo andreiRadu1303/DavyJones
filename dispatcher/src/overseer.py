@@ -22,7 +22,7 @@ from src.config import (
     OVERSEER_TIMEOUT_SECONDS,
     VAULT_PATH,
 )
-from src.container_runner import run_raw, run_task
+from src.container_runner import run_raw, run_raw_streaming, run_task
 from src.context_resolver import resolve, resolve_batch
 from src.git_watcher import get_changed_md_files, get_commit_diff_text
 from src.models import DispatchPayload, TaskResult
@@ -216,6 +216,7 @@ def _execute_single_task(
     task: PlannedTask,
     auto_commit_fn,
     dependency_outputs: dict[str, str] | None = None,
+    on_output=None,
 ) -> TaskResult:
     """Execute a single planned task in an agent container.
 
@@ -273,7 +274,7 @@ def _execute_single_task(
             },
         )
 
-        result = run_task(payload, timeout_override=timeout)
+        result = run_task(payload, timeout_override=timeout, on_output=on_output)
 
         if not result.hit_max_turns:
             # Completed within budget — merge with any previous output
@@ -333,12 +334,20 @@ def _collect_dependency_outputs(
 def execute_plan(
     plan: OverseerPlan,
     auto_commit_fn,
+    on_task_start=None,
+    on_task_finish=None,
+    on_task_output=None,
 ) -> dict[str, TaskResult]:
     """Execute all tasks in a plan, respecting dependency ordering.
 
     Uses topological levels: tasks within a level run concurrently,
     levels execute sequentially. After all tasks complete, results are
     aggregated per file_path and written once.
+
+    Optional callbacks (all default to None for backward compat):
+      on_task_start(task_id)           — called before each task runs
+      on_task_finish(task_id, result)  — called after each task completes
+      on_task_output(task_id, chunk)   — stderr chunks streamed in real-time
 
     Returns map of task_id → TaskResult.
     """
@@ -385,20 +394,32 @@ def execute_plan(
         if not runnable:
             continue
 
+        def _run_one(task):
+            if on_task_start:
+                try:
+                    on_task_start(task.id)
+                except Exception:
+                    pass
+            output_cb = (lambda chunk: on_task_output(task.id, chunk)) if on_task_output else None
+            dep_outputs = _collect_dependency_outputs(task, results)
+            result = _execute_single_task(task, auto_commit_fn, dep_outputs, on_output=output_cb)
+            if on_task_finish:
+                try:
+                    on_task_finish(task.id, result)
+                except Exception:
+                    pass
+            return result
+
         if len(runnable) == 1:
             task = runnable[0]
-            dep_outputs = _collect_dependency_outputs(task, results)
-            result = _execute_single_task(task, auto_commit_fn, dep_outputs)
+            result = _run_one(task)
             results[task.id] = result
             if result.status == "failed":
                 failed_ids.add(task.id)
         else:
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_AGENTS) as pool:
                 future_to_task = {
-                    pool.submit(
-                        _execute_single_task, task, auto_commit_fn,
-                        _collect_dependency_outputs(task, results),
-                    ): task
+                    pool.submit(_run_one, task): task
                     for task in runnable
                 }
                 for future in as_completed(future_to_task):

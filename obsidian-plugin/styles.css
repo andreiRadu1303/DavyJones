@@ -3,6 +3,31 @@
   display: none !important;
 }
 
+/* ─── File Explorer: Claude-touched markers ───────────────── */
+
+/* Right-aligned sparkle indicator for Claude-modified items */
+.davyjones-claude-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 0 4px;
+  flex-shrink: 0;
+  color: rgb(168, 130, 255);
+}
+.davyjones-claude-indicator svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+  filter: drop-shadow(0 0 2px rgba(168, 130, 255, 0.5));
+}
+/* File count next to folder sparkle */
+.davyjones-claude-indicator .davyjones-count {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
 /* ─── Nav bar ──────────────────────────────────────────────── */
 
 .davyjones-nav {
@@ -2007,4 +2032,460 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ─── Live Tasks ─────────────────────────────────────────────── */
+
+.davyjones-live-root {
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.davyjones-live-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.davyjones-live-header h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-normal);
+}
+
+.davyjones-live-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgb(70, 150, 230);
+  animation: davyjones-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.davyjones-live-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 16px 0;
+}
+
+.davyjones-live-card {
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.davyjones-live-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.davyjones-live-card-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.davyjones-live-toggle {
+  color: var(--text-faint);
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.davyjones-live-desc {
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.davyjones-live-elapsed {
+  color: var(--text-faint);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Phase progress bar */
+.davyjones-live-phases {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0 6px 20px;
+}
+
+.davyjones-live-phase-step {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--background-secondary);
+  color: var(--text-faint);
+}
+
+.davyjones-live-phase-step.is-active {
+  background: rgba(55, 155, 250, 0.2);
+  color: rgb(70, 150, 230);
+}
+
+.davyjones-live-phase-step.is-done {
+  background: rgba(75, 195, 115, 0.15);
+  color: rgb(70, 180, 105);
+}
+
+/* Overseer section */
+.davyjones-live-section {
+  padding: 0 4px 4px 20px;
+}
+
+.davyjones-live-section-label {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 0 2px 0;
+  cursor: pointer;
+}
+
+.davyjones-live-section-label:hover {
+  color: var(--text-muted);
+}
+
+/* Subtask tree */
+.davyjones-live-subtasks {
+  padding: 0 4px 4px 20px;
+}
+
+.davyjones-live-level-label {
+  font-size: 10px;
+  color: var(--text-faint);
+  padding: 4px 0 2px 0;
+}
+
+.davyjones-live-subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.davyjones-live-subtask-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.davyjones-live-subtask-desc {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.davyjones-live-subtask-file {
+  color: var(--text-faint);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.davyjones-live-output {
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* New status badges for live states */
+.davyjones-s-queued {
+  background: rgba(150, 150, 150, 0.15);
+  color: var(--text-faint);
+}
+
+.davyjones-s-running {
+  background: rgba(55, 155, 250, 0.15);
+  color: rgb(70, 150, 230);
+}
+
+.davyjones-s-planning {
+  background: rgba(170, 100, 240, 0.15);
+  color: rgb(150, 100, 220);
+}
+
+.davyjones-s-reporting {
+  background: rgba(255, 185, 50, 0.15);
+  color: rgb(225, 170, 50);
+}
+
+/* Report enhancements */
+.davyjones-reports-section-toggle {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 0 2px 0;
+  cursor: pointer;
+}
+
+.davyjones-reports-section-toggle:hover {
+  color: var(--text-muted);
+}
+
+.davyjones-reports-raw-output {
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.davyjones-reports-task-expanded {
+  padding: 4px 0 4px 20px;
+}
+
+.davyjones-reports-task-error {
+  font-size: 11px;
+  color: rgb(225, 80, 80);
+  padding: 4px 0;
+}
+
+.davyjones-reports-log-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.davyjones-reports-log-btn:hover {
+  filter: brightness(1.1);
+}
+
+/* ─── Execution Log Modal ───────────────────────────────────── */
+
+/* ── Execution Log Modal ── */
+
+.davyjones-execlog-modal-container {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  contain: none; /* allow breaking out of parent bounds */
+}
+.davyjones-execlog-modal-container > .modal-close-button {
+  display: none; /* titlebar has its own close */
+}
+.davyjones-execlog-modal-container > .modal-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 20px 20px;
+}
+
+/* ── Titlebar ── */
+
+.davyjones-execlog-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 6px 16px;
+  background: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+.davyjones-execlog-titlebar:active { cursor: grabbing; }
+
+.davyjones-execlog-titlebar-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.davyjones-execlog-titlebar-btns {
+  display: flex;
+  gap: 4px;
+}
+.davyjones-execlog-wbtn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+.davyjones-execlog-wbtn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.davyjones-execlog-wbtn-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* ── Maximized state ── */
+
+.davyjones-execlog-maximized {
+  border-radius: 0 !important;
+}
+.davyjones-execlog-maximized .davyjones-execlog-resize {
+  display: none;
+}
+
+/* ── Resize handles (edges + corners) ── */
+
+.davyjones-execlog-resize {
+  position: absolute;
+  z-index: 10;
+}
+.davyjones-execlog-resize-n  { top: 0; left: 10px; right: 10px; height: 5px; cursor: n-resize; }
+.davyjones-execlog-resize-s  { bottom: 0; left: 10px; right: 10px; height: 5px; cursor: s-resize; }
+.davyjones-execlog-resize-e  { top: 10px; right: 0; bottom: 10px; width: 5px; cursor: e-resize; }
+.davyjones-execlog-resize-w  { top: 10px; left: 0; bottom: 10px; width: 5px; cursor: w-resize; }
+.davyjones-execlog-resize-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: ne-resize; }
+.davyjones-execlog-resize-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nw-resize; }
+.davyjones-execlog-resize-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize; }
+.davyjones-execlog-resize-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize; }
+
+/* ── Content ── */
+
+.davyjones-execlog-modal {
+  /* contentEl — parent .modal-content scrolls */
+}
+
+.davyjones-execlog-title {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* ── Log entries (flat list, no nested scroll) ── */
+
+.davyjones-execlog-entry {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.davyjones-execlog-tool-use {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  margin-top: 8px;
+  background: rgba(55, 155, 250, 0.08);
+  border-left: 3px solid rgba(70, 150, 230, 0.6);
+  border-radius: 0 4px 4px 0;
+}
+.davyjones-execlog-tool-name {
+  color: rgb(70, 150, 230);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.davyjones-execlog-tool-args {
+  color: var(--text-muted);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.davyjones-execlog-tool-result {
+  padding: 4px 8px 4px 14px;
+  color: var(--text-muted);
+  border-left: 3px solid var(--background-modifier-border);
+  margin-bottom: 4px;
+}
+.davyjones-execlog-tool-result pre {
+  margin: 0;
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+.davyjones-execlog-empty-result {
+  font-size: 10px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.davyjones-execlog-text {
+  padding: 3px 8px;
+  color: var(--text-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.davyjones-execlog-agent-line {
+  font-size: 10px;
+  color: var(--text-faint);
+  padding: 2px 8px;
+  margin: 2px 0;
+}
+
+.davyjones-execlog-result-line {
+  padding: 6px 10px;
+  margin-top: 6px;
+  background: rgba(75, 195, 115, 0.08);
+  border-left: 3px solid rgba(70, 180, 105, 0.6);
+  border-radius: 0 4px 4px 0;
+  color: rgb(70, 180, 105);
+  font-weight: 600;
+}
+
+/* ── Final Result section ── */
+
+.davyjones-execlog-result-label {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.davyjones-execlog-result {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: rgb(70, 180, 105);
+  background: rgba(75, 195, 115, 0.06);
+  padding: 10px 12px;
+  margin: 6px 0 0;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

@@ -7,6 +7,7 @@ CLAUDE_DIR="$HOME/.claude"
 PROMPT_FILE="/tmp/task-prompt.txt"
 MCP_CONFIG="/tmp/mcp-config.json"
 MAX_TURNS="${MAX_TURNS:-20}"
+OUTPUT_FORMAT="${OUTPUT_FORMAT:-json}"
 
 # --- Credential setup ---
 mkdir -p "$CLAUDE_DIR"
@@ -126,10 +127,15 @@ if [ ! -f "$PROMPT_FILE" ]; then
     exit 1
 fi
 
-PROMPT=$(cat "$PROMPT_FILE")
+EXTRA_FLAGS=""
+if [ "$OUTPUT_FORMAT" = "stream-json" ]; then
+    EXTRA_FLAGS="--verbose"
+fi
 
-exec claude -p "$PROMPT" \
-    --output-format json \
+# Pipe prompt via stdin (-p -) to avoid ARG_MAX limits on large prompts
+exec claude -p - \
+    --output-format "$OUTPUT_FORMAT" \
     --max-turns "$MAX_TURNS" \
     --dangerously-skip-permissions \
-    --mcp-config "$MCP_CONFIG"
+    --mcp-config "$MCP_CONFIG" \
+    $EXTRA_FLAGS < "$PROMPT_FILE"
