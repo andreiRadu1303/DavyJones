@@ -24,6 +24,10 @@ _DEFAULT_RULES = {
     },
     "secrets": {},
     "serviceInstances": [],
+    "triggers": [],
+    "triggerDepth": 1,
+    "hierarchyDepth": 2,
+    "triggerMaxFiles": 30,
 }
 
 

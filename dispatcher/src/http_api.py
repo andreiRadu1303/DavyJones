@@ -118,8 +118,20 @@ def _execute_direct_task(
         # ── Phase: planning ──────────────────────────────────────
         task.phase = "planning"
 
+        # Load trigger config
+        triggers = vault_rules.get("triggers", [])
+        trigger_depth = vault_rules.get("triggerDepth", 1)
+        trigger_max_files = vault_rules.get("triggerMaxFiles", 30)
+        hierarchy_depth = vault_rules.get("hierarchyDepth", 2)
+
         if scope_files:
-            scope_context = resolve_batch(VAULT_PATH, scope_files)
+            scope_context = resolve_batch(
+                VAULT_PATH, scope_files,
+                triggers=triggers,
+                trigger_depth=trigger_depth,
+                trigger_max_files=trigger_max_files,
+                hierarchy_depth=hierarchy_depth,
+            )
         else:
             scope_context = ""
 

@@ -595,6 +595,64 @@
   display: none;
 }
 
+/* Trigger cards */
+.davyjones-cp-trigger-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.davyjones-cp-trigger-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.davyjones-cp-trigger-card.is-active {
+  border-color: rgba(124, 58, 237, 0.4);
+  background: rgba(124, 58, 237, 0.06);
+}
+
+.davyjones-cp-trigger-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.davyjones-cp-trigger-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.davyjones-cp-trigger-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.davyjones-cp-trigger-toggle {
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.davyjones-cp-trigger-toggle .setting-item {
+  border-top: none;
+  padding: 0;
+}
+
+.davyjones-cp-trigger-toggle .setting-item-info {
+  display: none;
+}
+
 /* Apply bar (pinned footer) */
 .davyjones-cp-apply-bar {
   flex-shrink: 0;

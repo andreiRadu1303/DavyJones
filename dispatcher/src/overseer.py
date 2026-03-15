@@ -42,8 +42,21 @@ def gather_commit_data(
     changed_files = get_changed_md_files(repo, from_sha, to_sha)
     diff_text = get_commit_diff_text(repo, from_sha, to_sha)
 
+    # Load trigger config from vault rules
+    vault_rules = load_vault_rules()
+    triggers = vault_rules.get("triggers", [])
+    trigger_depth = vault_rules.get("triggerDepth", 1)
+    trigger_max_files = vault_rules.get("triggerMaxFiles", 30)
+    hierarchy_depth = vault_rules.get("hierarchyDepth", 2)
+
     # Build accumulated lightweight context for all changed files
-    context = resolve_batch(VAULT_PATH, changed_files)
+    context = resolve_batch(
+        VAULT_PATH, changed_files,
+        triggers=triggers,
+        trigger_depth=trigger_depth,
+        trigger_max_files=trigger_max_files,
+        hierarchy_depth=hierarchy_depth,
+    )
 
     return CommitData(
         changed_files=changed_files,

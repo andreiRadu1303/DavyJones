@@ -155,6 +155,42 @@ def _context_format_block() -> list[str]:
         "",
         "- Each file shows its full text, ancestor file paths, and sibling file paths",
         "- Wiki-links like [[path/to/file]] are cross-references the agent can follow",
+        "- Files marked `← triggered` were not directly changed but are structurally",
+        "  related to changed files (included via cascading trigger config)",
+        "- A Hierarchy Tree section shows the folder structure around changed files",
+        "",
+    ]
+
+
+def _trigger_instructions() -> list[str]:
+    """Instructions for handling triggered (cascading) files."""
+    return [
+        "## Cascading Change Awareness",
+        "",
+        "Files marked '← triggered' were not directly changed but are structurally related to",
+        "changed files. Analyze them for:",
+        "",
+        "1. **TOC/Index files**: If a triggered file is a table of contents and a new child file",
+        "   was created, create a task to update the TOC to include the new file.",
+        "",
+        "2. **Convention enforcement**: If triggered sibling files show a consistent format/pattern,",
+        "   create tasks to ensure changed files follow the same conventions.",
+        "",
+        "3. **Bidirectional links**: If a new file was created, check if parent/sibling files",
+        "   should link to it (and vice versa).",
+        "",
+        "4. **Structural intent — scaffolding from patterns**: When a changed file adds an entry",
+        "   (text or link) to a list, and triggered sibling/child files show that other entries",
+        "   in that list correspond to real files/folders (e.g., Home.md lists 'RPG', 'FPS',",
+        "   'Strategy' and each has a corresponding Genres/X.md), create tasks to scaffold the",
+        "   missing structure for the new entry following the same pattern. The user is expressing",
+        "   intent through the addition — act on it even if the edit looks minor.",
+        "",
+        "5. **No-op is valid**: If triggered files don't need updating, don't create tasks for them.",
+        "   Only act when there's a clear structural relationship that requires synchronization.",
+        "",
+        "When creating task prompts, instruct agents to read relevant files via `obsidian_read_notes`",
+        "to understand existing patterns before making changes.",
         "",
     ]
 
@@ -260,7 +296,7 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
         "",
         "- If no work is needed, return {\"tasks\": []}",
         "- Context-only changes (_context.md, folder restructuring) → no tasks",
-        "- Minor edits (typo fixes, formatting) → no tasks",
+        "- Minor edits (typo fixes, formatting) with no structural implications → no tasks",
         "- A trivial single-step task (e.g., 'post one message') → 1 task is fine",
         "",
         "## What triggers work",
@@ -274,6 +310,7 @@ def build(commit_data: CommitData, vault_rules: dict | None = None) -> str:
     parts.extend(_examples_block())
     parts.extend(_task_prompt_rules())
     parts.extend(_context_format_block())
+    parts.extend(_trigger_instructions())
     parts.extend(_vault_rules_block(vault_rules))
 
     # Changed files summary
@@ -354,6 +391,7 @@ def build_direct_task(
     parts.extend(_examples_block())
     parts.extend(_task_prompt_rules())
     parts.extend(_context_format_block())
+    parts.extend(_trigger_instructions())
     parts.extend(_vault_rules_block(vault_rules))
     parts.extend(_reports_api_block())
 

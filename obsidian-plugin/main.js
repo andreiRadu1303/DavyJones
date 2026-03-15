@@ -3196,6 +3196,81 @@ class DavyJonesControlPanel extends ItemView {
       });
     }
 
+    // ── Cascading Triggers ──
+    const triggerSection = body.createDiv({ cls: "davyjones-cp-section" });
+    triggerSection.createEl("h3", { text: "Cascading Triggers" });
+    triggerSection.createEl("p", {
+      cls: "davyjones-cp-desc",
+      text: "When a file changes, also include related files so the overseer can detect TOC updates, convention enforcement, and link synchronization.",
+    });
+
+    if (!this._rules.triggers) this._rules.triggers = [];
+    const triggerModes = [
+      { key: "folder", label: "Same Folder", desc: "Include sibling .md files in the same directory" },
+      { key: "parent", label: "Parent Folders", desc: "Include .md files in parent directories (depth controls how far up)" },
+      { key: "children", label: "Child Folders", desc: "Include .md files in immediate subdirectories" },
+    ];
+
+    const triggerGrid = triggerSection.createDiv({ cls: "davyjones-cp-trigger-grid" });
+    for (const mode of triggerModes) {
+      const isActive = this._rules.triggers.includes(mode.key);
+      const card = triggerGrid.createDiv({ cls: `davyjones-cp-trigger-card ${isActive ? "is-active" : ""}` });
+      const cardInfo = card.createDiv({ cls: "davyjones-cp-trigger-info" });
+      cardInfo.createEl("span", { cls: "davyjones-cp-trigger-label", text: mode.label });
+      cardInfo.createEl("span", { cls: "davyjones-cp-trigger-desc", text: mode.desc });
+      const cardToggle = card.createDiv({ cls: "davyjones-cp-trigger-toggle" });
+      new Setting(cardToggle).addToggle((toggle) => {
+        toggle.setValue(isActive).onChange((value) => {
+          if (!this._rules.triggers) this._rules.triggers = [];
+          if (value && !this._rules.triggers.includes(mode.key)) {
+            this._rules.triggers.push(mode.key);
+          } else if (!value) {
+            this._rules.triggers = this._rules.triggers.filter(t => t !== mode.key);
+          }
+          this._dirty = true;
+          card.classList.toggle("is-active", value);
+        });
+      });
+    }
+
+    const triggerTuningRow = triggerSection.createDiv({ cls: "davyjones-cp-row" });
+
+    const depthBox = triggerTuningRow.createDiv({ cls: "davyjones-cp-inline-setting" });
+    new Setting(depthBox)
+      .setName("Trigger Depth")
+      .setDesc("How many levels to recurse (1 = immediate, 2+ = cascade further)")
+      .addText((text) => {
+        text.setPlaceholder("1")
+          .setValue(String(this._rules.triggerDepth || 1))
+          .onChange((value) => {
+            const v = Math.max(1, Math.min(3, parseInt(value, 10) || 1));
+            this._rules.triggerDepth = v;
+            this._dirty = true;
+          });
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.inputEl.max = "3";
+        text.inputEl.style.width = "70px";
+      });
+
+    const maxFilesBox = triggerTuningRow.createDiv({ cls: "davyjones-cp-inline-setting" });
+    new Setting(maxFilesBox)
+      .setName("Max Triggered Files")
+      .setDesc("Cap on total expanded files")
+      .addText((text) => {
+        text.setPlaceholder("30")
+          .setValue(String(this._rules.triggerMaxFiles || 30))
+          .onChange((value) => {
+            const v = Math.max(5, Math.min(100, parseInt(value, 10) || 30));
+            this._rules.triggerMaxFiles = v;
+            this._dirty = true;
+          });
+        text.inputEl.type = "number";
+        text.inputEl.min = "5";
+        text.inputEl.max = "100";
+        text.inputEl.style.width = "70px";
+      });
+
     // ── Custom Secrets ──
     const secretsSection = body.createDiv({ cls: "davyjones-cp-section" });
     secretsSection.createEl("h3", { text: "Custom Secrets" });
