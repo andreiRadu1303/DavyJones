@@ -108,8 +108,9 @@ class DavyJonesPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.renderUI());
 
     // ── File explorer decoration: mark files touched by Claude agents ──
-    // Poll dispatcher API for changed files instead of parsing git
+    // Clear any stale markers from previous session on startup
     this.app.workspace.onLayoutReady(() => {
+      fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
       setTimeout(() => this._pollClaudeChanges(), 1000);
     });
     // Re-apply decorations when file explorer re-renders (e.g. folder expand/collapse)
@@ -166,6 +167,8 @@ class DavyJonesPlugin extends Plugin {
 
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
+    // Clear server-side markers so next session starts clean
+    fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
     this._claudeTouchedFiles.clear();
     this._decorateFileExplorer(); // remove all markers
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
@@ -416,6 +419,7 @@ class DavyJonesPlugin extends Plugin {
       { header: "# GitHub", keys: ["GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_MCP_ENABLED"] },
       { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_MCP_URL", "GITLAB_MCP_ENABLED"] },
       { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_MCP_ENABLED"] },
+      { header: "# Google Workspace", keys: ["GOOGLE_WORKSPACE_ENABLED", "GWS_CONFIG_PATH"] },
     ];
 
     for (const section of sections) {
@@ -472,6 +476,73 @@ class DavyJonesPlugin extends Plugin {
   _writeCalendar(data) {
     const calPath = path.join(this._vaultPath, ".davyjones-calendar.json");
     fs.writeFileSync(calPath, JSON.stringify(data, null, 2), "utf8");
+  }
+
+  _getGwsStatus() {
+    const os = require("os");
+    try {
+      const raw = execSync("gws auth status 2>/dev/null", {
+        timeout: 5000,
+        encoding: "utf8",
+        env: { ...process.env, PATH: process.env.PATH + ":/usr/local/bin:/opt/homebrew/bin:" + path.join(os.homedir(), ".nvm/versions/node", fs.readdirSync(path.join(os.homedir(), ".nvm/versions/node")).pop() || "v22", "bin") },
+      }).trim();
+      // gws auth status may print "Using keyring backend: ..." before JSON
+      const jsonStart = raw.indexOf("{");
+      if (jsonStart < 0) return { connected: false, error: "no JSON in output" };
+      const data = JSON.parse(raw.slice(jsonStart));
+      if (!data.has_refresh_token && !data.token_valid) {
+        return { connected: false, error: "no credentials" };
+      }
+      const scopeMap = {
+        gmail: "Gmail", drive: "Drive", calendar: "Calendar",
+        spreadsheets: "Sheets", documents: "Docs",
+      };
+      const scopes = [];
+      const seenScopes = new Set();
+      for (const s of (data.scopes || [])) {
+        for (const [key, label] of Object.entries(scopeMap)) {
+          if (s.includes(key) && !seenScopes.has(key)) {
+            scopes.push(label);
+            seenScopes.add(key);
+          }
+        }
+      }
+      return {
+        connected: true,
+        user: data.user || "",
+        scopes,
+        enabledApis: data.enabled_apis || [],
+        projectId: data.project_id || "",
+      };
+    } catch (e) {
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes("not found") || msg.includes("enoent")) {
+        return { connected: false, error: "gws CLI not installed" };
+      }
+      return { connected: false, error: "auth check failed" };
+    }
+  }
+
+  _openGwsAuth() {
+    const os = require("os");
+    const nvmDir = path.join(os.homedir(), ".nvm/versions/node");
+    let nodeBin = "";
+    try {
+      const versions = fs.readdirSync(nvmDir);
+      if (versions.length) nodeBin = `export PATH="${path.join(nvmDir, versions[versions.length - 1], "bin")}:$PATH" && `;
+    } catch { /* no nvm */ }
+    const cmd = `${nodeBin}gws auth login && gws auth export > ~/.config/gws/credentials.json && echo '\\n✅ Google auth complete. You can close this window.'`;
+    if (process.platform === "darwin") {
+      exec(`osascript -e 'tell application "Terminal" to do script "${cmd.replace(/"/g, '\\"')}"'`);
+    } else {
+      // Linux fallback
+      for (const term of ["gnome-terminal", "xterm", "konsole"]) {
+        try { execSync(`which ${term}`); exec(`${term} -- bash -c '${cmd}'`); return; } catch { /* try next */ }
+      }
+      // ultimate fallback: copy to clipboard
+      try { execSync(`echo '${cmd}' | pbcopy 2>/dev/null || echo '${cmd}' | xclip 2>/dev/null`); } catch { /* */ }
+      new Notice("Command copied to clipboard. Paste it in a terminal.");
+    }
   }
 
   _applyServiceConfig() {
@@ -3090,6 +3161,79 @@ class DavyJonesControlPanel extends ItemView {
           },
         ).open();
       });
+    }
+
+    // ── Google Workspace ──
+    const gwsSection = body.createDiv({ cls: "davyjones-cp-section" });
+    gwsSection.createEl("h3", { text: "Google Workspace" });
+    gwsSection.createEl("p", {
+      cls: "davyjones-cp-desc",
+      text: "Give agents access to Gmail, Drive, Calendar, and Sheets via the gws CLI.",
+    });
+
+    const gwsCard = gwsSection.createDiv({ cls: "davyjones-cp-gws-card" });
+    const gwsStatus = this.plugin._getGwsStatus();
+
+    const gwsHeader = gwsCard.createDiv({ cls: "davyjones-cp-gws-header" });
+    const gwsDot = gwsHeader.createEl("span", { cls: `davyjones-cp-gws-dot ${gwsStatus.connected ? "is-connected" : ""}` });
+    if (gwsStatus.connected) {
+      gwsHeader.createEl("span", { cls: "davyjones-cp-gws-user", text: `Connected as ${gwsStatus.user}` });
+    } else {
+      const errText = gwsStatus.error === "gws CLI not installed"
+        ? "gws CLI not installed — run: npm install -g @googleworkspace/cli"
+        : "Not connected";
+      gwsHeader.createEl("span", { cls: "davyjones-cp-gws-user", text: errText });
+    }
+
+    // Enable toggle
+    const gwsToggleWrap = gwsHeader.createDiv({ cls: "davyjones-cp-gws-toggle" });
+    new Setting(gwsToggleWrap).addToggle((toggle) => {
+      toggle.setValue(this._config.GOOGLE_WORKSPACE_ENABLED !== "false").onChange((value) => {
+        this._config.GOOGLE_WORKSPACE_ENABLED = value ? "true" : "false";
+        this._dirty = true;
+      });
+    });
+
+    // Scope pills
+    if (gwsStatus.connected && gwsStatus.scopes.length > 0) {
+      const scopeRow = gwsCard.createDiv({ cls: "davyjones-cp-gws-scopes" });
+      const scopeColors = { Gmail: "#ea4335", Drive: "#4285f4", Calendar: "#f4b400", Sheets: "#0f9d58", Docs: "#4285f4" };
+      for (const scope of gwsStatus.scopes) {
+        const pill = scopeRow.createEl("span", { cls: "davyjones-cp-gws-scope", text: scope });
+        pill.style.setProperty("--scope-color", scopeColors[scope] || "#888");
+      }
+    }
+
+    // Action buttons
+    const gwsActions = gwsCard.createDiv({ cls: "davyjones-cp-gws-actions" });
+    const authBtn = gwsActions.createEl("button", {
+      cls: "davyjones-cp-gws-btn",
+      text: gwsStatus.connected ? "Re-authenticate" : "Authenticate",
+    });
+    authBtn.addEventListener("click", () => {
+      this.plugin._openGwsAuth();
+      new Notice("Terminal opened. Complete the Google OAuth flow in your browser.");
+    });
+
+    const refreshBtn = gwsActions.createEl("button", {
+      cls: "davyjones-cp-gws-btn davyjones-cp-gws-btn-secondary",
+      text: "Refresh Status",
+    });
+    refreshBtn.addEventListener("click", () => {
+      this._render();
+    });
+
+    if (!gwsStatus.connected && gwsStatus.error !== "gws CLI not installed") {
+      gwsCard.createEl("p", {
+        cls: "davyjones-cp-gws-hint",
+        text: 'Click "Authenticate" to open a terminal with gws auth login. Complete the OAuth flow in your browser, then click "Refresh Status".',
+      });
+    }
+
+    // Set GWS_CONFIG_PATH default
+    if (!this._config.GWS_CONFIG_PATH) {
+      const os = require("os");
+      this._config.GWS_CONFIG_PATH = path.join(os.homedir(), ".config", "gws");
     }
 
     // ── Agent Behavior ──

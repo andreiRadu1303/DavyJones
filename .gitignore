@@ -2,6 +2,7 @@
 .env
 .claude-credentials.json
 .claude/
+secrets/
 
 # Python
 __pycache__/
@@ -12,6 +13,9 @@ venv/
 
 # Node
 node_modules/
+
+# Test vaults
+testVault/
 
 # OS
 .DS_Store

@@ -93,6 +93,7 @@ def run_raw(
             "SLACK_MCP_ENABLED": os.environ.get("SLACK_MCP_ENABLED", "true"),
             "GITHUB_MCP_ENABLED": os.environ.get("GITHUB_MCP_ENABLED", "true"),
             "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
+            "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
         # Inject custom secrets from vault rules
@@ -116,6 +117,14 @@ def run_raw(
         # Mount credentials from host if available
         if CREDS_HOST_PATH:
             volumes[CREDS_HOST_PATH] = {"bind": "/tmp/claude-credentials.json", "mode": "ro"}
+
+        # Mount Google Workspace CLI credentials if available
+        # Note: path is a HOST path, not accessible from within the dispatcher container,
+        # so we skip os.path.isdir() and trust the env var — Docker will mount it.
+        # Mounted rw so gws can cache refreshed access tokens.
+        gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
+        if gws_config_path:
+            volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
 
         # Create container (not started) so we can inject the prompt file
         container = client.containers.create(
@@ -327,6 +336,7 @@ def run_raw_streaming(
             "SLACK_MCP_ENABLED": os.environ.get("SLACK_MCP_ENABLED", "true"),
             "GITHUB_MCP_ENABLED": os.environ.get("GITHUB_MCP_ENABLED", "true"),
             "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
+            "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
         vault_rules = load_vault_rules()
@@ -345,6 +355,14 @@ def run_raw_streaming(
         }
         if CREDS_HOST_PATH:
             volumes[CREDS_HOST_PATH] = {"bind": "/tmp/claude-credentials.json", "mode": "ro"}
+
+        # Mount Google Workspace CLI credentials if available
+        # Note: path is a HOST path, not accessible from within the dispatcher container,
+        # so we skip os.path.isdir() and trust the env var — Docker will mount it.
+        # Mounted rw so gws can cache refreshed access tokens.
+        gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
+        if gws_config_path:
+            volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
 
         container = client.containers.create(
             image=AGENT_IMAGE,

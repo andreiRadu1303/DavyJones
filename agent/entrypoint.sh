@@ -121,6 +121,13 @@ for name, srv in servers.items():
         print(f'[agent] check failed: {name} ({url}) {e}', file=sys.stderr)
 " 2>/dev/null || true
 
+# --- Google Workspace CLI credentials ---
+GOOGLE_ENABLED="${GOOGLE_WORKSPACE_ENABLED:-true}"
+if [ "$GOOGLE_ENABLED" != "false" ] && [ -d "$HOME/.config/gws" ]; then
+    export GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$HOME/.config/gws"
+    echo "[gws] OAuth credentials loaded from mounted config" >&2
+fi
+
 # --- Read prompt and run Claude CLI ---
 if [ ! -f "$PROMPT_FILE" ]; then
     echo "[agent] ERROR: No prompt file at $PROMPT_FILE" >&2

@@ -595,6 +595,117 @@
   display: none;
 }
 
+/* Google Workspace card */
+.davyjones-cp-gws-card {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-top: 8px;
+  transition: border-color 0.2s;
+}
+
+.davyjones-cp-gws-card:has(.davyjones-cp-gws-dot.is-connected) {
+  border-color: rgba(15, 157, 88, 0.35);
+}
+
+.davyjones-cp-gws-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.davyjones-cp-gws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.davyjones-cp-gws-dot.is-connected {
+  background: #0f9d58;
+  box-shadow: 0 0 6px rgba(15, 157, 88, 0.5);
+}
+
+.davyjones-cp-gws-user {
+  font-size: 13px;
+  color: var(--text-normal);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.davyjones-cp-gws-toggle {
+  flex-shrink: 0;
+}
+
+.davyjones-cp-gws-toggle .setting-item {
+  border-top: none;
+  padding: 0;
+}
+
+.davyjones-cp-gws-toggle .setting-item-info {
+  display: none;
+}
+
+.davyjones-cp-gws-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.davyjones-cp-gws-scope {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--scope-color) 15%, transparent);
+  color: var(--scope-color);
+  border: 1px solid color-mix(in srgb, var(--scope-color) 25%, transparent);
+}
+
+.davyjones-cp-gws-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.davyjones-cp-gws-btn {
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: none;
+  background: rgba(124, 58, 237, 0.15);
+  color: rgb(168, 130, 255);
+  transition: background 0.15s;
+}
+
+.davyjones-cp-gws-btn:hover {
+  background: rgba(124, 58, 237, 0.25);
+}
+
+.davyjones-cp-gws-btn-secondary {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.davyjones-cp-gws-btn-secondary:hover {
+  background: var(--background-modifier-border-hover, var(--background-modifier-border));
+  color: var(--text-normal);
+}
+
+.davyjones-cp-gws-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  line-height: 1.4;
+}
+
 /* Trigger cards */
 .davyjones-cp-trigger-grid {
   display: flex;
