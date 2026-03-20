@@ -3056,19 +3056,90 @@ class DavyJonesGwsAuthModal extends Modal {
     this._running = false;
   }
 
+  _clientSecretPath() {
+    const os = require("os");
+    return path.join(os.homedir(), ".config", "gws", "client_secret.json");
+  }
+
+  _hasClientSecret() {
+    try { fs.accessSync(this._clientSecretPath()); return true; } catch { return false; }
+  }
+
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("davyjones-gws-auth-modal");
     contentEl.createEl("h2", { text: "Google Workspace Authentication" });
-    contentEl.createEl("p", {
+    this._bodyEl = contentEl.createDiv();
+    this._renderSetupStep();
+  }
+
+  onClose() {
+    this._killProc();
+    this.contentEl.empty();
+  }
+
+  // ── Step 1: Check for client_secret.json ──────────────────
+
+  _renderSetupStep() {
+    const el = this._bodyEl;
+    el.empty();
+
+    const hasSecret = this._hasClientSecret();
+
+    const hint = el.createEl("p", { cls: "davyjones-gws-auth-hint" });
+    hint.setText(
+      "Before authenticating, you need an OAuth client_secret.json from the Google Cloud Console."
+    );
+
+    const steps = el.createEl("ol", { cls: "davyjones-gws-auth-steps" });
+    const li1 = steps.createEl("li");
+    li1.appendText("Go to ");
+    li1.createEl("a", {
+      text: "Google Cloud Console → Credentials",
+      href: "https://console.cloud.google.com/apis/credentials",
+      attr: { target: "_blank" },
+    });
+    steps.createEl("li", { text: 'Click "Create Credentials" → "OAuth client ID" → Application type: Desktop app' });
+    steps.createEl("li", { text: 'Download the client_secret_*.json file from the dialog' });
+    const li4 = steps.createEl("li");
+    li4.appendText("Save it to: ");
+    li4.createEl("code", { text: this._clientSecretPath() });
+
+    const statusEl = el.createDiv({ cls: "davyjones-gws-auth-file-status" });
+    if (hasSecret) {
+      statusEl.createEl("span", { cls: "davyjones-gws-auth-found", text: "✓ client_secret.json found" });
+    } else {
+      statusEl.createEl("span", { cls: "davyjones-gws-auth-missing", text: "✗ client_secret.json not found" });
+    }
+
+    const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+
+    if (!hasSecret) {
+      const recheckBtn = btnRow.createEl("button", { text: "Check Again" });
+      recheckBtn.addEventListener("click", () => this._renderSetupStep());
+    }
+
+    const continueBtn = btnRow.createEl("button", { cls: "mod-cta", text: hasSecret ? "Continue" : "Continue Anyway" });
+    continueBtn.addEventListener("click", () => this._renderAuthStep());
+  }
+
+  // ── Step 2: Run gws auth setup, then login ────────────────
+
+  _renderAuthStep() {
+    const el = this._bodyEl;
+    el.empty();
+
+    el.createEl("p", {
       cls: "davyjones-gws-auth-hint",
-      text: "A browser window will open for Google OAuth. Complete the sign-in flow there.",
+      text: "Running gws auth setup. A browser window will open for Google OAuth — complete the sign-in there.",
     });
 
-    this._outputEl = contentEl.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
-    this._outputEl.setText("Starting gws auth login...\n");
+    this._outputEl = el.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
+    this._outputEl.setText("Running gws auth setup --login ...\n");
 
-    const btnRow = contentEl.createDiv({ cls: "davyjones-gws-auth-buttons" });
+    const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
     this._cancelBtn = btnRow.createEl("button", { text: "Cancel" });
     this._cancelBtn.addEventListener("click", () => {
       this._killProc();
@@ -3078,13 +3149,26 @@ class DavyJonesGwsAuthModal extends Modal {
     this._closeBtn.style.display = "none";
     this._closeBtn.addEventListener("click", () => this.close());
 
-    this._startAuth();
+    this._runSpawn("gws auth setup --login", (code) => {
+      if (code === 0) {
+        this._appendOutput("\nSetup & login succeeded. Exporting credentials...\n");
+        this._exportCredentials();
+      } else {
+        this._appendOutput(`\nSetup failed (exit code ${code}). Trying gws auth login directly...\n`);
+        this._runSpawn("gws auth login", (code2) => {
+          if (code2 === 0) {
+            this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
+            this._exportCredentials();
+          } else {
+            this._appendOutput(`\nAuth login failed (exit code ${code2}).\n`);
+            this._showDone(false);
+          }
+        });
+      }
+    });
   }
 
-  onClose() {
-    this._killProc();
-    this.contentEl.empty();
-  }
+  // ── Helpers ────────────────────────────────────────────────
 
   _appendOutput(text) {
     this._outputEl.setText(this._outputEl.getText() + text);
@@ -3098,10 +3182,10 @@ class DavyJonesGwsAuthModal extends Modal {
     }
   }
 
-  _startAuth() {
+  _runSpawn(cmd, onDone) {
     const shell = process.env.SHELL || "/bin/sh";
     this._running = true;
-    this._proc = spawn(shell, ["-lc", "gws auth login"], {
+    this._proc = spawn(shell, ["-lc", cmd], {
       env: { ...process.env, PATH: this.plugin._shellPath() },
     });
 
@@ -3110,18 +3194,12 @@ class DavyJonesGwsAuthModal extends Modal {
 
     this._proc.on("close", (code) => {
       this._running = false;
-      if (code === 0) {
-        this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
-        this._exportCredentials();
-      } else {
-        this._appendOutput(`\nAuth login failed (exit code ${code}).\n`);
-        this._showDone(false);
-      }
+      onDone(code);
     });
 
     this._proc.on("error", (err) => {
       this._running = false;
-      this._appendOutput(`\nFailed to start gws: ${err.message}\n`);
+      this._appendOutput(`\nFailed to start process: ${err.message}\n`);
       this._showDone(false);
     });
   }
@@ -3145,7 +3223,6 @@ class DavyJonesGwsAuthModal extends Modal {
     this._cancelBtn.style.display = "none";
     this._closeBtn.style.display = "";
     if (success) {
-      // Refresh control panel views
       for (const leaf of this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE)) {
         if (leaf.view && leaf.view._render) leaf.view._render();
       }

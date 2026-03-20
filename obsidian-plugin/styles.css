@@ -2221,6 +2221,38 @@
   margin: 0 0 12px 0;
 }
 
+.davyjones-gws-auth-steps {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding-left: 20px;
+  margin: 8px 0 12px 0;
+  line-height: 1.7;
+}
+
+.davyjones-gws-auth-steps a {
+  color: var(--interactive-accent);
+}
+
+.davyjones-gws-auth-steps code {
+  font-size: 11px;
+  background: var(--background-secondary);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.davyjones-gws-auth-file-status {
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.davyjones-gws-auth-found {
+  color: var(--text-success, #4ade80);
+}
+
+.davyjones-gws-auth-missing {
+  color: var(--text-error, #f87171);
+}
+
 .davyjones-gws-auth-output {
   min-height: 120px;
   max-height: 350px;
