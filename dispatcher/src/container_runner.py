@@ -96,6 +96,11 @@ def run_raw(
             "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
+        # Google Workspace CLI: pass token and credentials file path if available
+        gws_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+        if gws_token:
+            environment["GOOGLE_WORKSPACE_CLI_TOKEN"] = gws_token
+
         # Inject custom secrets from vault rules
         vault_rules = load_vault_rules()
         for key, value in vault_rules.get("secrets", {}).items():
@@ -125,6 +130,7 @@ def run_raw(
         gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
         if gws_config_path:
             volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
+            environment["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = "/home/agent/.config/gws/credentials.json"
 
         # Create container (not started) so we can inject the prompt file
         container = client.containers.create(
@@ -339,6 +345,11 @@ def run_raw_streaming(
             "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
+        # Google Workspace CLI: pass token and credentials file path if available
+        gws_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+        if gws_token:
+            environment["GOOGLE_WORKSPACE_CLI_TOKEN"] = gws_token
+
         vault_rules = load_vault_rules()
         for key, value in vault_rules.get("secrets", {}).items():
             environment[key] = str(value)
@@ -363,6 +374,7 @@ def run_raw_streaming(
         gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
         if gws_config_path:
             volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
+            environment["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = "/home/agent/.config/gws/credentials.json"
 
         container = client.containers.create(
             image=AGENT_IMAGE,
