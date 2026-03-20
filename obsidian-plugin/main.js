@@ -3065,6 +3065,13 @@ class DavyJonesGwsAuthModal extends Modal {
     try { fs.accessSync(this._clientSecretPath()); return true; } catch { return false; }
   }
 
+  _readClientSecretProjectId() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this._clientSecretPath(), "utf8"));
+      return (raw.installed && raw.installed.project_id) || (raw.web && raw.web.project_id) || null;
+    } catch { return null; }
+  }
+
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("davyjones-gws-auth-modal");
@@ -3137,7 +3144,6 @@ class DavyJonesGwsAuthModal extends Modal {
     });
 
     this._outputEl = el.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
-    this._outputEl.setText("Running gws auth setup --login ...\n");
 
     const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
     this._cancelBtn = btnRow.createEl("button", { text: "Cancel" });
@@ -3149,7 +3155,12 @@ class DavyJonesGwsAuthModal extends Modal {
     this._closeBtn.style.display = "none";
     this._closeBtn.addEventListener("click", () => this.close());
 
-    this._runSpawn("gws auth setup --login", (code) => {
+    const projectId = this._readClientSecretProjectId();
+    const projectFlag = projectId ? ` --project ${projectId}` : "";
+    const setupCmd = `gws auth setup --login${projectFlag}`;
+    this._outputEl.setText(`Running ${setupCmd} ...\n`);
+
+    this._runSpawn(setupCmd, (code) => {
       if (code === 0) {
         this._appendOutput("\nSetup & login succeeded. Exporting credentials...\n");
         this._exportCredentials();
