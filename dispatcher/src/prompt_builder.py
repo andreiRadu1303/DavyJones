@@ -1,11 +1,10 @@
-import os
-
 from src.models import DispatchPayload
+from src.vault_rules import get_vault_env
 
 
 def _gws_available() -> bool:
     """Check if Google Workspace credentials are configured for agent containers."""
-    return bool(os.environ.get("GWS_CONFIG_PATH", ""))
+    return bool(get_vault_env("GWS_CONFIG_PATH"))
 
 
 def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> str:
@@ -84,7 +83,7 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
             parts.extend(["", "- Be thorough and detailed in your output."])
 
     # Google Workspace CLI instructions (only when credentials are mounted)
-    gws_enabled = os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true").lower() != "false"
+    gws_enabled = get_vault_env("GOOGLE_WORKSPACE_ENABLED", "true").lower() != "false"
     if gws_enabled and _gws_available():
         parts.extend([
             "",

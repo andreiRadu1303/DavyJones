@@ -125,12 +125,6 @@ for name, srv in servers.items():
 GOOGLE_ENABLED="${GOOGLE_WORKSPACE_ENABLED:-true}"
 if [ "$GOOGLE_ENABLED" != "false" ] && [ -d "$HOME/.config/gws" ]; then
     export GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$HOME/.config/gws"
-
-    # Point gws CLI directly at the credentials file if it exists
-    if [ -f "$HOME/.config/gws/credentials.json" ]; then
-        export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE="$HOME/.config/gws/credentials.json"
-    fi
-
     echo "[gws] OAuth credentials loaded from mounted config" >&2
 fi
 

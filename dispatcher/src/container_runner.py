@@ -20,7 +20,7 @@ from src.config import (
 from src.models import DispatchPayload, TaskResult
 from src.prompt_builder import build_prompt
 from src.token_refresh import CredStatus, ensure_valid_token, get_cred_health
-from src.vault_rules import load_vault_rules
+from src.vault_rules import get_vault_env, load_vault_rules
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +93,11 @@ def run_raw(
             "SLACK_MCP_ENABLED": os.environ.get("SLACK_MCP_ENABLED", "true"),
             "GITHUB_MCP_ENABLED": os.environ.get("GITHUB_MCP_ENABLED", "true"),
             "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
-            "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
+            "GOOGLE_WORKSPACE_ENABLED": get_vault_env("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
         # Google Workspace CLI: pass token and credentials file path if available
-        gws_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+        gws_token = get_vault_env("GOOGLE_WORKSPACE_CLI_TOKEN")
         if gws_token:
             environment["GOOGLE_WORKSPACE_CLI_TOKEN"] = gws_token
 
@@ -124,13 +124,12 @@ def run_raw(
             volumes[CREDS_HOST_PATH] = {"bind": "/tmp/claude-credentials.json", "mode": "ro"}
 
         # Mount Google Workspace CLI credentials if available
-        # Note: path is a HOST path, not accessible from within the dispatcher container,
-        # so we skip os.path.isdir() and trust the env var — Docker will mount it.
+        # Reads from os.environ first, then .davyjones.env (control panel config).
+        # Path is a HOST path — Docker mounts it directly into the agent container.
         # Mounted rw so gws can cache refreshed access tokens.
-        gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
+        gws_config_path = get_vault_env("GWS_CONFIG_PATH")
         if gws_config_path:
             volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
-            environment["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = "/home/agent/.config/gws/credentials.json"
 
         # Create container (not started) so we can inject the prompt file
         container = client.containers.create(
@@ -342,11 +341,11 @@ def run_raw_streaming(
             "SLACK_MCP_ENABLED": os.environ.get("SLACK_MCP_ENABLED", "true"),
             "GITHUB_MCP_ENABLED": os.environ.get("GITHUB_MCP_ENABLED", "true"),
             "GITLAB_MCP_ENABLED": os.environ.get("GITLAB_MCP_ENABLED", "true"),
-            "GOOGLE_WORKSPACE_ENABLED": os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true"),
+            "GOOGLE_WORKSPACE_ENABLED": get_vault_env("GOOGLE_WORKSPACE_ENABLED", "true"),
         }
 
         # Google Workspace CLI: pass token and credentials file path if available
-        gws_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN", "")
+        gws_token = get_vault_env("GOOGLE_WORKSPACE_CLI_TOKEN")
         if gws_token:
             environment["GOOGLE_WORKSPACE_CLI_TOKEN"] = gws_token
 
@@ -368,13 +367,12 @@ def run_raw_streaming(
             volumes[CREDS_HOST_PATH] = {"bind": "/tmp/claude-credentials.json", "mode": "ro"}
 
         # Mount Google Workspace CLI credentials if available
-        # Note: path is a HOST path, not accessible from within the dispatcher container,
-        # so we skip os.path.isdir() and trust the env var — Docker will mount it.
+        # Reads from os.environ first, then .davyjones.env (control panel config).
+        # Path is a HOST path — Docker mounts it directly into the agent container.
         # Mounted rw so gws can cache refreshed access tokens.
-        gws_config_path = os.environ.get("GWS_CONFIG_PATH", "")
+        gws_config_path = get_vault_env("GWS_CONFIG_PATH")
         if gws_config_path:
             volumes[gws_config_path] = {"bind": "/home/agent/.config/gws", "mode": "rw"}
-            environment["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = "/home/agent/.config/gws/credentials.json"
 
         container = client.containers.create(
             image=AGENT_IMAGE,

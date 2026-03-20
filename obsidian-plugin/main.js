@@ -3229,6 +3229,15 @@ class DavyJonesGwsAuthModal extends Modal {
     this._cancelBtn.style.display = "none";
     this._closeBtn.style.display = "";
     if (success) {
+      // Auto-save GWS_CONFIG_PATH so the dispatcher can mount credentials immediately
+      const config = this.plugin._readDavyJonesEnv();
+      if (!config.GWS_CONFIG_PATH) {
+        const os = require("os");
+        config.GWS_CONFIG_PATH = path.join(os.homedir(), ".config", "gws");
+      }
+      config.GOOGLE_WORKSPACE_ENABLED = config.GOOGLE_WORKSPACE_ENABLED || "true";
+      this.plugin._writeDavyJonesEnv(config);
+
       for (const leaf of this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE)) {
         if (leaf.view && leaf.view._render) leaf.view._render();
       }
