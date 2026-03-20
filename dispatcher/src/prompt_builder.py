@@ -1,4 +1,11 @@
+import os
+
 from src.models import DispatchPayload
+
+
+def _gws_available() -> bool:
+    """Check if Google Workspace credentials are configured for agent containers."""
+    return bool(os.environ.get("GWS_CONFIG_PATH", ""))
 
 
 def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> str:
@@ -75,5 +82,25 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
             parts.extend(["", "- Keep your output concise and minimal."])
         elif verbosity == "detailed":
             parts.extend(["", "- Be thorough and detailed in your output."])
+
+    # Google Workspace CLI instructions (only when credentials are mounted)
+    gws_enabled = os.environ.get("GOOGLE_WORKSPACE_ENABLED", "true").lower() != "false"
+    if gws_enabled and _gws_available():
+        parts.extend([
+            "",
+            "## Google Workspace",
+            "",
+            "You have access to Google Workspace (Gmail, Drive, Calendar, Sheets, Docs) "
+            "via the `gws` CLI tool. Credentials are pre-configured — no login needed.",
+            "",
+            "Common commands:",
+            "- `gws gmail users messages list --params '{\"userId\":\"me\",\"q\":\"search query\"}'` — search emails",
+            "- `gws gmail users messages get --params '{\"userId\":\"me\",\"id\":\"MESSAGE_ID\"}'` — read an email",
+            "- `gws drive files list --params '{\"q\":\"name contains \\\"report\\\"\"}'` — search Drive",
+            "- `gws calendar events list --params '{\"calendarId\":\"primary\"}'` — list calendar events",
+            "- `gws sheets spreadsheets values get --params '{\"spreadsheetId\":\"ID\",\"range\":\"Sheet1\"}'` — read spreadsheet",
+            "",
+            "Use `gws --help` or `gws <service> --help` for more commands.",
+        ])
 
     return "\n".join(parts)
