@@ -2256,6 +2256,14 @@
 .davyjones-gws-auth-output {
   min-height: 120px;
   max-height: 350px;
+  user-select: text;
+  cursor: text;
+}
+
+.davyjones-gws-auth-output a {
+  color: var(--interactive-accent);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .davyjones-gws-auth-buttons {

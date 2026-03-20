@@ -3140,10 +3140,11 @@ class DavyJonesGwsAuthModal extends Modal {
 
     el.createEl("p", {
       cls: "davyjones-gws-auth-hint",
-      text: "Running gws auth setup. A browser window will open for Google OAuth — complete the sign-in there.",
+      text: "Running gws auth login. A browser window will open for Google OAuth — complete the sign-in there.",
     });
 
     this._outputEl = el.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
+    this._outputRaw = "";
 
     const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
     this._cancelBtn = btnRow.createEl("button", { text: "Cancel" });
@@ -3155,26 +3156,15 @@ class DavyJonesGwsAuthModal extends Modal {
     this._closeBtn.style.display = "none";
     this._closeBtn.addEventListener("click", () => this.close());
 
-    const projectId = this._readClientSecretProjectId();
-    const projectFlag = projectId ? ` --project ${projectId}` : "";
-    const setupCmd = `gws auth setup --login${projectFlag}`;
-    this._outputEl.setText(`Running ${setupCmd} ...\n`);
+    this._appendOutput("Running gws auth login ...\n");
 
-    this._runSpawn(setupCmd, (code) => {
+    this._runSpawn("gws auth login", (code) => {
       if (code === 0) {
-        this._appendOutput("\nSetup & login succeeded. Exporting credentials...\n");
+        this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
         this._exportCredentials();
       } else {
-        this._appendOutput(`\nSetup failed (exit code ${code}). Trying gws auth login directly...\n`);
-        this._runSpawn("gws auth login", (code2) => {
-          if (code2 === 0) {
-            this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
-            this._exportCredentials();
-          } else {
-            this._appendOutput(`\nAuth login failed (exit code ${code2}).\n`);
-            this._showDone(false);
-          }
-        });
+        this._appendOutput(`\nAuth login failed (exit code ${code}).\n`);
+        this._showDone(false);
       }
     });
   }
@@ -3182,7 +3172,12 @@ class DavyJonesGwsAuthModal extends Modal {
   // ── Helpers ────────────────────────────────────────────────
 
   _appendOutput(text) {
-    this._outputEl.setText(this._outputEl.getText() + text);
+    this._outputRaw += text;
+    // Escape HTML, then linkify URLs
+    const escaped = this._outputRaw
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/(https?:\/\/[^\s<>"')\]]+)/g, '<a href="$1" target="_blank">$1</a>');
+    this._outputEl.innerHTML = escaped;
     this._outputEl.scrollTop = this._outputEl.scrollHeight;
   }
 
