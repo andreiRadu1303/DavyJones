@@ -2203,6 +2203,36 @@
   white-space: nowrap;
 }
 
+/* ─── GWS Auth Modal ─────────────────────────────────────────── */
+
+.davyjones-gws-auth-modal {
+  max-width: 520px;
+}
+
+.davyjones-gws-auth-modal h2 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  color: var(--text-normal);
+}
+
+.davyjones-gws-auth-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 12px 0;
+}
+
+.davyjones-gws-auth-output {
+  min-height: 120px;
+  max-height: 350px;
+}
+
+.davyjones-gws-auth-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 /* ─── Live Tasks ─────────────────────────────────────────────── */
 
 .davyjones-live-root {

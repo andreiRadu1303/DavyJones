@@ -1,7 +1,7 @@
 const { Plugin, Notice, MarkdownView, PluginSettingTab, Setting, ItemView, Modal } = require("obsidian");
 const fs = require("fs");
 const path = require("path");
-const { exec, execSync } = require("child_process");
+const { exec, execSync, spawn } = require("child_process");
 
 function fuzzyMatch(query, target) {
   const q = query.toLowerCase();
@@ -478,13 +478,23 @@ class DavyJonesPlugin extends Plugin {
     fs.writeFileSync(calPath, JSON.stringify(data, null, 2), "utf8");
   }
 
+  _shellPath() {
+    if (this._cachedShellPath) return this._cachedShellPath;
+    try {
+      const shell = process.env.SHELL || "/bin/sh";
+      this._cachedShellPath = execSync(`${shell} -lc 'echo $PATH'`, { timeout: 5000, encoding: "utf8" }).trim();
+    } catch {
+      this._cachedShellPath = process.env.PATH || "";
+    }
+    return this._cachedShellPath;
+  }
+
   _getGwsStatus() {
-    const os = require("os");
     try {
       const raw = execSync("gws auth status 2>/dev/null", {
         timeout: 5000,
         encoding: "utf8",
-        env: { ...process.env, PATH: process.env.PATH + ":/usr/local/bin:/opt/homebrew/bin:" + path.join(os.homedir(), ".nvm/versions/node", fs.readdirSync(path.join(os.homedir(), ".nvm/versions/node")).pop() || "v22", "bin") },
+        env: { ...process.env, PATH: this._shellPath() },
       }).trim();
       // gws auth status may print "Using keyring backend: ..." before JSON
       const jsonStart = raw.indexOf("{");
@@ -524,25 +534,7 @@ class DavyJonesPlugin extends Plugin {
   }
 
   _openGwsAuth() {
-    const os = require("os");
-    const nvmDir = path.join(os.homedir(), ".nvm/versions/node");
-    let nodeBin = "";
-    try {
-      const versions = fs.readdirSync(nvmDir);
-      if (versions.length) nodeBin = `export PATH="${path.join(nvmDir, versions[versions.length - 1], "bin")}:$PATH" && `;
-    } catch { /* no nvm */ }
-    const cmd = `${nodeBin}gws auth login && gws auth export > ~/.config/gws/credentials.json && echo '\\n✅ Google auth complete. You can close this window.'`;
-    if (process.platform === "darwin") {
-      exec(`osascript -e 'tell application "Terminal" to do script "${cmd.replace(/"/g, '\\"')}"'`);
-    } else {
-      // Linux fallback
-      for (const term of ["gnome-terminal", "xterm", "konsole"]) {
-        try { execSync(`which ${term}`); exec(`${term} -- bash -c '${cmd}'`); return; } catch { /* try next */ }
-      }
-      // ultimate fallback: copy to clipboard
-      try { execSync(`echo '${cmd}' | pbcopy 2>/dev/null || echo '${cmd}' | xclip 2>/dev/null`); } catch { /* */ }
-      new Notice("Command copied to clipboard. Paste it in a terminal.");
-    }
+    new DavyJonesGwsAuthModal(this.app, this).open();
   }
 
   _applyServiceConfig() {
@@ -3054,6 +3046,113 @@ class DavyJonesICSImportModal extends Modal {
   }
 }
 
+// ─── GWS Auth Modal ───────────────────────────────────────────
+
+class DavyJonesGwsAuthModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this._proc = null;
+    this._running = false;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("davyjones-gws-auth-modal");
+    contentEl.createEl("h2", { text: "Google Workspace Authentication" });
+    contentEl.createEl("p", {
+      cls: "davyjones-gws-auth-hint",
+      text: "A browser window will open for Google OAuth. Complete the sign-in flow there.",
+    });
+
+    this._outputEl = contentEl.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
+    this._outputEl.setText("Starting gws auth login...\n");
+
+    const btnRow = contentEl.createDiv({ cls: "davyjones-gws-auth-buttons" });
+    this._cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    this._cancelBtn.addEventListener("click", () => {
+      this._killProc();
+      this.close();
+    });
+    this._closeBtn = btnRow.createEl("button", { text: "Close" });
+    this._closeBtn.style.display = "none";
+    this._closeBtn.addEventListener("click", () => this.close());
+
+    this._startAuth();
+  }
+
+  onClose() {
+    this._killProc();
+    this.contentEl.empty();
+  }
+
+  _appendOutput(text) {
+    this._outputEl.setText(this._outputEl.getText() + text);
+    this._outputEl.scrollTop = this._outputEl.scrollHeight;
+  }
+
+  _killProc() {
+    if (this._proc && this._running) {
+      try { this._proc.kill(); } catch { /* already dead */ }
+      this._running = false;
+    }
+  }
+
+  _startAuth() {
+    const shell = process.env.SHELL || "/bin/sh";
+    this._running = true;
+    this._proc = spawn(shell, ["-lc", "gws auth login"], {
+      env: { ...process.env, PATH: this.plugin._shellPath() },
+    });
+
+    this._proc.stdout.on("data", (data) => this._appendOutput(data.toString()));
+    this._proc.stderr.on("data", (data) => this._appendOutput(data.toString()));
+
+    this._proc.on("close", (code) => {
+      this._running = false;
+      if (code === 0) {
+        this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
+        this._exportCredentials();
+      } else {
+        this._appendOutput(`\nAuth login failed (exit code ${code}).\n`);
+        this._showDone(false);
+      }
+    });
+
+    this._proc.on("error", (err) => {
+      this._running = false;
+      this._appendOutput(`\nFailed to start gws: ${err.message}\n`);
+      this._showDone(false);
+    });
+  }
+
+  _exportCredentials() {
+    exec("gws auth export > ~/.config/gws/credentials.json", {
+      timeout: 15000,
+      env: { ...process.env, PATH: this.plugin._shellPath() },
+    }, (err, stdout, stderr) => {
+      if (err) {
+        this._appendOutput(`\nCredential export failed: ${stderr || err.message}\n`);
+        this._showDone(false);
+      } else {
+        this._appendOutput("\n✅ Google auth complete. Credentials saved.\n");
+        this._showDone(true);
+      }
+    });
+  }
+
+  _showDone(success) {
+    this._cancelBtn.style.display = "none";
+    this._closeBtn.style.display = "";
+    if (success) {
+      // Refresh control panel views
+      for (const leaf of this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE)) {
+        if (leaf.view && leaf.view._render) leaf.view._render();
+      }
+    }
+  }
+}
+
 // ─── Control Panel (center view) ──────────────────────────────
 
 class DavyJonesControlPanel extends ItemView {
@@ -3212,7 +3311,6 @@ class DavyJonesControlPanel extends ItemView {
     });
     authBtn.addEventListener("click", () => {
       this.plugin._openGwsAuth();
-      new Notice("Terminal opened. Complete the Google OAuth flow in your browser.");
     });
 
     const refreshBtn = gwsActions.createEl("button", {
@@ -3226,7 +3324,7 @@ class DavyJonesControlPanel extends ItemView {
     if (!gwsStatus.connected && gwsStatus.error !== "gws CLI not installed") {
       gwsCard.createEl("p", {
         cls: "davyjones-cp-gws-hint",
-        text: 'Click "Authenticate" to open a terminal with gws auth login. Complete the OAuth flow in your browser, then click "Refresh Status".',
+        text: 'Click "Authenticate" to start the Google OAuth flow. A browser window will open for sign-in.',
       });
     }
 
