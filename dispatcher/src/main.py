@@ -164,7 +164,10 @@ def _process_task(file_path: str) -> None:
 
 
 def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
-    """Handle a single commit range through the overseer pipeline."""
+    """Handle a single commit range through the overseer pipeline.
+
+    Creates a DirectTask so commit-based work appears in the Live Tasks view.
+    """
     logger.info("New commits detected: %s..%s", from_sha[:8], to_sha[:8])
 
     # Skip DavyJones auto-commits
@@ -180,42 +183,137 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
 
     logger.info("Changed files: %s", commit_data.changed_files)
 
-    # Run the overseer
+    # Local imports to avoid circular dependency (main imports http_api at runtime)
+    from src.http_api import (
+        DirectTask,
+        SubtaskProgress,
+        _OUTPUT_TAIL_MAX,
+        _store_task,
+    )
+    from src.plan_models import topological_levels
+
+    import uuid
+    from datetime import datetime, timezone
+
+    # Create a tracked DirectTask for the live view
+    source_detail = {"from_sha": from_sha, "to_sha": to_sha}
+    desc = f"Commit {from_sha[:8]}..{to_sha[:8]}: {len(commit_data.changed_files)} files"
+    task = DirectTask(
+        id=str(uuid.uuid4())[:8],
+        description=desc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        source="commit",
+        source_detail=source_detail,
+    )
+    _store_task(task)
+
+    task.status = "running"
+    task.started_at = datetime.now(timezone.utc).isoformat()
+
+    # ── Phase: planning ──────────────────────────────────────
+    task.phase = "planning"
+
     plan = run_overseer(commit_data)
 
     if plan is None:
         # Overseer failed — fall back to per-file dispatch
         logger.warning("Overseer failed — falling back to per-file dispatch")
+        task.status = "failed"
+        task.phase = "done"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
+        task.error = "Overseer failed — fell back to per-file dispatch"
         _fallback_dispatch(commit_data.changed_files)
         return
 
     if not plan.tasks:
         logger.info("Overseer decided: no tasks needed")
+        task.status = "completed"
+        task.phase = "done"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
         return
 
-    # Execute the plan
+    # ── Phase: executing ─────────────────────────────────────
+    task.phase = "executing"
+    task.task_count = len(plan.tasks)
+
+    # Populate subtask progress from the plan
+    levels = topological_levels(plan)
+    level_map: dict[str, int] = {}
+    for level_idx, level_tasks in enumerate(levels):
+        for t in level_tasks:
+            level_map[t.id] = level_idx
+
+    task.subtasks = [
+        SubtaskProgress(
+            id=t.id,
+            description=t.description,
+            file_path=t.file_path,
+            level=level_map.get(t.id, 0),
+        )
+        for t in plan.tasks
+    ]
+
+    # Callbacks to update subtask progress in real-time
+    def _on_task_start(task_id: str):
+        for st in task.subtasks:
+            if st.id == task_id:
+                st.status = "running"
+                st.started_at = datetime.now(timezone.utc).isoformat()
+                break
+
+    def _on_task_finish(task_id: str, result):
+        for st in task.subtasks:
+            if st.id == task_id:
+                st.status = result.status
+                st.error = result.error
+                st.execution_log = getattr(result, 'execution_log', '') or ''
+                st.finished_at = datetime.now(timezone.utc).isoformat()
+                break
+        task.succeeded = sum(1 for s in task.subtasks if s.status == "completed")
+        task.failed = sum(1 for s in task.subtasks if s.status == "failed")
+
+    def _on_task_output(task_id: str, chunk: str):
+        for st in task.subtasks:
+            if st.id == task_id:
+                st.output = (st.output + chunk)[-_OUTPUT_TAIL_MAX:]
+                break
+
     logger.info("Executing overseer plan: %d tasks", len(plan.tasks))
     t_start = time.time()
-    results = execute_plan(plan, _auto_commit)
+    results = execute_plan(
+        plan, _auto_commit,
+        on_task_start=_on_task_start,
+        on_task_finish=_on_task_finish,
+        on_task_output=_on_task_output,
+    )
     duration = time.time() - t_start
 
-    succeeded = sum(1 for r in results.values() if r.status == "completed")
-    failed = sum(1 for r in results.values() if r.status == "failed")
-    logger.info("Plan completed: %d tasks, %d succeeded, %d failed",
-                len(plan.tasks), succeeded, failed)
+    task.succeeded = sum(1 for r in results.values() if r.status == "completed")
+    task.failed = sum(1 for r in results.values() if r.status == "failed")
+    task.status = "completed" if task.failed == 0 else "failed"
+    if task.failed > 0:
+        task.error = f"{task.failed}/{task.task_count} sub-tasks failed"
 
-    # Enqueue Scribe report (fire-and-forget)
+    logger.info("Plan completed: %d tasks, %d succeeded, %d failed",
+                len(plan.tasks), task.succeeded, task.failed)
+
+    # ── Phase: reporting ─────────────────────────────────────
+    task.phase = "reporting"
+    task.finished_at = datetime.now(timezone.utc).isoformat()
+
     try:
         scribe_enqueue(ScribeJob(
             plan=plan,
             results=results,
             source="commit",
-            source_detail={"from_sha": from_sha, "to_sha": to_sha},
-            description=f"Commit {from_sha[:8]}..{to_sha[:8]}: {len(plan.tasks)} tasks",
+            source_detail=source_detail,
+            description=desc,
             duration_seconds=duration,
         ))
     except Exception:
         logger.exception("Failed to enqueue Scribe job")
+
+    task.phase = "done"
 
 
 def main() -> None:
