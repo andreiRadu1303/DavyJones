@@ -68,6 +68,11 @@ github_enabled = os.environ.get('GITHUB_MCP_ENABLED', 'true').lower() != 'false'
 if github_token and github_enabled:
     servers['github'] = {'type': 'sse', 'url': github_url}
 
+# DavyJones MCP (always available on the Docker network)
+davyjones_url = os.environ.get('DAVYJONES_MCP_URL', 'http://davyjones-davyjones-mcp:3004/sse')
+if davyjones_url:
+    servers['davyjones'] = {'type': 'sse', 'url': davyjones_url}
+
 # Dynamic MCP instances (additional GitHub/GitLab accounts from dispatcher)
 mcp_instances_raw = os.environ.get('DAVYJONES_MCP_INSTANCES', '')
 if mcp_instances_raw:

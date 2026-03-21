@@ -76,6 +76,19 @@ services:
     networks:
       - davyjones
 
+  davyjones-mcp:
+    build:
+      context: ./davyjones-mcp
+      dockerfile: Dockerfile
+    container_name: davyjones-davyjones-mcp
+    volumes:
+      - ${VAULT_DIR:?Set VAULT_DIR in .env}:/vault
+    environment:
+      - VAULT_PATH=/vault
+    restart: unless-stopped
+    networks:
+      - davyjones
+
   slack-mcp:
     build:
       context: ./slack-mcp
