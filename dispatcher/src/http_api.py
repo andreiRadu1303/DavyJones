@@ -76,6 +76,9 @@ class DirectTask:
     created_at: str = ""
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # Source tracking
+    source: str = "direct"  # direct | commit | calendar | slack
+    source_detail: Optional[dict] = None
 
 
 _tasks: dict[str, DirectTask] = {}
@@ -109,6 +112,8 @@ def _execute_direct_task(
 ) -> None:
     """Background thread: resolve context, run overseer, execute plan."""
     try:
+        task.source = source
+        task.source_detail = source_detail
         task.status = "running"
         task.started_at = datetime.now(timezone.utc).isoformat()
         logger.info("Direct task %s started: %s", task.id, description[:100])
@@ -310,6 +315,8 @@ def _serialize_task(task: DirectTask) -> dict:
         "created_at": task.created_at,
         "started_at": task.started_at,
         "finished_at": task.finished_at,
+        "source": task.source,
+        "source_detail": task.source_detail,
         "overseer_output": task.overseer_output[-3000:] if task.overseer_output else "",
         "overseer_execution_log": task.overseer_execution_log,
         "plan_json": task.plan_json,
