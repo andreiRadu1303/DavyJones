@@ -2465,6 +2465,28 @@
   color: rgb(225, 170, 50);
 }
 
+/* Source badges */
+.davyjones-source-commit {
+  background: rgba(245, 158, 11, 0.15);
+  color: rgb(217, 140, 15);
+}
+.davyjones-source-calendar {
+  background: rgba(124, 58, 237, 0.15);
+  color: rgb(139, 92, 246);
+}
+.davyjones-source-slack {
+  background: rgba(74, 21, 75, 0.15);
+  color: rgb(224, 30, 90);
+}
+
+/* Commit SHA range display */
+.davyjones-live-commit-info {
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  color: var(--text-faint);
+  padding: 2px 8px 4px 24px;
+}
+
 /* Report enhancements */
 .davyjones-reports-section-toggle {
   font-size: 10px;

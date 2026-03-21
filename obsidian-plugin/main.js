@@ -1457,6 +1457,15 @@ class DavyJonesLiveTasksView extends ItemView {
   }
 
   _render() {
+    // ── Save scroll positions before DOM rebuild ──────────────
+    const scrollState = {};
+    const rootScroll = this.contentEl.scrollTop;
+    for (const el of this.contentEl.querySelectorAll("pre[data-scroll-key]")) {
+      const key = el.getAttribute("data-scroll-key");
+      const atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 20;
+      scrollState[key] = { scrollTop: el.scrollTop, atBottom };
+    }
+
     this.contentEl.empty();
 
     const header = this.contentEl.createDiv({ cls: "davyjones-live-header" });
@@ -1489,6 +1498,14 @@ class DavyJonesLiveTasksView extends ItemView {
         : `davyjones-s-${task.phase}`;
       row.createEl("span", { cls: `davyjones-prop-badge ${phaseClass}`, text: phaseBadge });
 
+      // Source badge (skip for direct tasks)
+      if (task.source && task.source !== "direct") {
+        row.createEl("span", {
+          cls: `davyjones-prop-badge davyjones-source-${task.source}`,
+          text: task.source,
+        });
+      }
+
       const desc = task.description.length > 50 ? task.description.slice(0, 50) + "..." : task.description;
       row.createEl("span", { cls: "davyjones-live-desc", text: desc });
 
@@ -1517,6 +1534,18 @@ class DavyJonesLiveTasksView extends ItemView {
 
       if (!isExpanded) continue;
 
+      // Commit SHA range info
+      if (task.source === "commit" && task.source_detail) {
+        const from = task.source_detail.from_sha || "";
+        const to = task.source_detail.to_sha || "";
+        if (from && to) {
+          card.createDiv({
+            cls: "davyjones-live-commit-info",
+            text: `${from.slice(0, 8)}..${to.slice(0, 8)}`,
+          });
+        }
+      }
+
       // Phase progress bar
       const phasesDiv = card.createDiv({ cls: "davyjones-live-phases" });
       for (const p of LIVE_PHASES) {
@@ -1544,7 +1573,12 @@ class DavyJonesLiveTasksView extends ItemView {
           this._render();
         });
         if (osExpanded) {
-          section.createEl("pre", { cls: "davyjones-live-output", text: task.overseer_output });
+          const scrollKey = `${task.task_id}:overseer-output`;
+          const pre = section.createEl("pre", {
+            cls: "davyjones-live-output",
+            text: task.overseer_output,
+          });
+          pre.setAttribute("data-scroll-key", scrollKey);
         }
       }
 
@@ -1590,13 +1624,36 @@ class DavyJonesLiveTasksView extends ItemView {
             });
 
             if (stExpanded) {
+              const scrollKey = `${task.task_id}:${st.id}:output`;
               const outputText = st.error
                 ? `Error: ${st.error}`
                 : st.output || "(waiting for output...)";
-              subtasksDiv.createEl("pre", { cls: "davyjones-live-output", text: outputText });
+              const pre = subtasksDiv.createEl("pre", {
+                cls: "davyjones-live-output",
+                text: outputText,
+              });
+              pre.setAttribute("data-scroll-key", scrollKey);
             }
           }
         }
+      }
+    }
+
+    // ── Restore scroll positions after DOM rebuild ────────────
+    this.contentEl.scrollTop = rootScroll;
+    for (const el of this.contentEl.querySelectorAll("pre[data-scroll-key]")) {
+      const key = el.getAttribute("data-scroll-key");
+      const saved = scrollState[key];
+      if (saved) {
+        // User was at bottom → follow new content; otherwise preserve position
+        if (saved.atBottom) {
+          el.scrollTop = el.scrollHeight;
+        } else {
+          el.scrollTop = saved.scrollTop;
+        }
+      } else {
+        // New element → scroll to bottom
+        el.scrollTop = el.scrollHeight;
       }
     }
   }
