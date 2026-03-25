@@ -132,6 +132,33 @@ def pull_remote(repo: git.Repo) -> bool:
         return False
 
 
+def push_remote(repo: git.Repo) -> bool:
+    """Push to the tracking remote (if configured).
+
+    Returns True if push succeeded, False otherwise.
+    Silently does nothing if there is no remote or no tracking branch.
+    Used in cloud mode to sync agent changes back to Forgejo.
+    """
+    try:
+        if not repo.remotes:
+            return False
+        remote = repo.remotes[0]
+        branch = repo.active_branch
+        tracking = branch.tracking_branch()
+        if tracking is None:
+            return False
+
+        remote.push()
+        logger.info("Pushed to %s/%s", remote.name, branch.name)
+        return True
+    except git.GitCommandError as e:
+        logger.warning("git push failed: %s", e)
+        return False
+    except Exception:
+        logger.warning("Unexpected error during push", exc_info=True)
+        return False
+
+
 def get_new_commit_ranges(repo: git.Repo, last_sha: Optional[str]) -> list[tuple[str, str]]:
     """Get commit ranges to process since last_sha.
 

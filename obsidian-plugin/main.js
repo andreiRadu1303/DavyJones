@@ -135,6 +135,11 @@ class DavyJonesPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new DavyJonesSettingTab(this.app, this));
 
+    // Cloud git sync (every 15s when in cloud mode)
+    if (this._isCloudMode()) {
+      this.registerInterval(window.setInterval(() => this._cloudGitSync(), 15000));
+    }
+
     // Periodic refresh
     this.registerInterval(window.setInterval(() => {
       this._updateStatusBar();
@@ -382,8 +387,55 @@ class DavyJonesPlugin extends Plugin {
 
   _apiBase() {
     const env = this._readDavyJonesEnv();
+    if (env.DAVYJONES_CLOUD_API) return env.DAVYJONES_CLOUD_API;
     const port = env.HTTP_PORT || "5555";
     return `http://localhost:${port}`;
+  }
+
+  _isCloudMode() {
+    const env = this._readDavyJonesEnv();
+    return !!env.DAVYJONES_CLOUD_API;
+  }
+
+  _cloudFetch(url, options = {}) {
+    const env = this._readDavyJonesEnv();
+    if (env.DAVYJONES_CLOUD_TOKEN) {
+      options.headers = {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${env.DAVYJONES_CLOUD_TOKEN}`,
+      };
+    }
+    return fetch(url, options);
+  }
+
+  /** Background git sync for cloud mode — push local commits, pull agent changes. */
+  _cloudGitSync() {
+    if (!this._isCloudMode()) return;
+    const shell = process.env.SHELL || "/bin/bash";
+
+    // Push any unpushed commits
+    exec(
+      `${shell} -c 'cd "${this._vaultPath}" && git push davyjones-cloud main 2>&1'`,
+      { timeout: 30000, cwd: this._vaultPath },
+      (err, stdout) => {
+        if (err && !stdout.includes("Everything up-to-date")) {
+          console.log("DavyJones cloud push:", stdout?.trim() || err.message);
+        }
+      },
+    );
+
+    // Pull agent changes from cloud
+    exec(
+      `${shell} -c 'cd "${this._vaultPath}" && git pull --rebase davyjones-cloud main 2>&1'`,
+      { timeout: 30000, cwd: this._vaultPath },
+      (err, stdout) => {
+        if (!err && stdout && !stdout.includes("Already up to date")) {
+          console.log("DavyJones cloud pull:", stdout.trim());
+          // Trigger Obsidian to re-read changed files
+          this.app.vault.trigger("modify");
+        }
+      },
+    );
   }
 
   _readDavyJonesEnv() {
@@ -420,6 +472,7 @@ class DavyJonesPlugin extends Plugin {
       { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_MCP_URL", "GITLAB_MCP_ENABLED"] },
       { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_MCP_ENABLED"] },
       { header: "# Google Workspace", keys: ["GOOGLE_WORKSPACE_ENABLED", "GWS_CONFIG_PATH"] },
+      { header: "# Cloud", keys: ["DAVYJONES_CLOUD_API", "DAVYJONES_CLOUD_TOKEN", "DAVYJONES_VAULT_ID"] },
     ];
 
     for (const section of sections) {
@@ -658,6 +711,10 @@ class DavyJonesPlugin extends Plugin {
         new Notice("Commit failed: " + (stderr?.split("\n")[0] || err.message));
       } else {
         new Notice("Changes committed");
+        // Push to cloud remote if in cloud mode
+        if (this._isCloudMode()) {
+          this._cloudGitSync();
+        }
         // Show green "committed" for 3 seconds then fade
         this._commitDone = true;
         clearTimeout(this._commitDoneTimer);

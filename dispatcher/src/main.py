@@ -18,6 +18,7 @@ from src.git_watcher import (
     has_human_commits,
     load_last_sha,
     pull_remote,
+    push_remote,
     save_last_sha,
 )
 from src.overseer import execute_plan, gather_commit_data, run_overseer
@@ -72,6 +73,13 @@ def _auto_commit(file_path: str, status: str) -> None:
                     logger.info("Claude changed files: %s", changed)
             except Exception:
                 logger.exception("Failed to get changed files from commit")
+            # Push to remote if configured (cloud mode sync)
+            try:
+                repo = get_repo()
+                if repo.remotes:
+                    push_remote(repo)
+            except Exception:
+                logger.debug("Push after auto-commit skipped (no remote or error)")
         else:
             stderr = result.stderr.decode().strip()
             if "nothing to commit" in stderr:
