@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud.api.auth import get_current_user
+from cloud.api.limits import check_task_limit, increment_task_count
 from cloud.config import settings
 from cloud.db import get_db
 from cloud.models.user import User
@@ -50,12 +51,15 @@ class TaskSubmit(BaseModel):
 async def submit_task(
     vault_id: str,
     body: TaskSubmit,
-    user: User = Depends(get_current_user),
+    user: User = Depends(check_task_limit),
     db: AsyncSession = Depends(get_db),
 ):
     """Submit a task to a vault's dispatcher."""
     vault = await _get_user_vault(vault_id, user, db)
     url = _dispatcher_url(user.id, vault.slug)
+
+    # Increment usage counter
+    increment_task_count(user.id)
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:

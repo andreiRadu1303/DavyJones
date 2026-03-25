@@ -37,11 +37,13 @@ from cloud.api.auth import router as auth_router
 from cloud.api.vaults import router as vaults_router
 from cloud.api.tasks import router as tasks_router
 from cloud.api.billing import router as billing_router
+from cloud.api.account import router as account_router
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(vaults_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")
+app.include_router(account_router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")
