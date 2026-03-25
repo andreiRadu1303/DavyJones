@@ -546,20 +546,8 @@ class DavyJonesPlugin extends Plugin {
     new Notice("Applying service configuration...");
 
     const shell = process.env.SHELL || "/bin/bash";
-    const mergeScript = path.join(this._projectRoot, "scripts", "_merge_env.sh");
-    const rootEnv = path.join(this._projectRoot, ".env");
-
-    // Build profile flags for services that have tokens AND are enabled
-    const config = this._readDavyJonesEnv();
-    const rules = this._readVaultRules();
-    const profiles = [];
-    if (config.SLACK_BOT_TOKEN && config.SLACK_MCP_ENABLED !== "false") profiles.push("--profile slack");
-    if (config.GITLAB_TOKEN && config.GITLAB_MCP_ENABLED !== "false") profiles.push("--profile gitlab");
-    if (config.GITHUB_TOKEN && config.GITHUB_MCP_ENABLED !== "false") profiles.push("--profile github");
-    if (rules.autoCommit) profiles.push("--profile auto-commit");
-    const profileFlags = profiles.join(" ");
-
-    const cmd = `${shell} -l -c 'source "${mergeScript}" && merge_vault_env "${this._vaultPath}" "${rootEnv}" && cd "${this._projectRoot}" && docker compose --profile build-only ${profileFlags} build && docker compose ${profileFlags} up -d 2>&1'`;
+    const davyjones = path.join(this._projectRoot, "davyjones");
+    const cmd = `${shell} -l -c '"${davyjones}" start --vault "${this._vaultPath}" 2>&1'`;
 
     exec(cmd, { timeout: 180000, cwd: this._projectRoot }, (err, stdout, stderr) => {
       if (err) {
@@ -774,18 +762,18 @@ class DavyJonesPlugin extends Plugin {
       return;
     }
 
-    new Notice("Switching vault...");
-    const switchScript = path.join(this._projectRoot, "scripts", "switch.sh");
+    new Notice("Starting vault dispatcher...");
     const shell = process.env.SHELL || "/bin/bash";
-    const cmd = `${shell} -l -c 'bash "${switchScript}" "${this._vaultPath}"'`;
+    const davyjones = path.join(this._projectRoot, "davyjones");
+    const cmd = `${shell} -l -c '"${davyjones}" start --vault "${this._vaultPath}"'`;
 
-    exec(cmd, { timeout: 60000, cwd: this._projectRoot }, (err, stdout, stderr) => {
-      if (err || !stdout.includes("Done.")) {
+    exec(cmd, { timeout: 120000, cwd: this._projectRoot }, (err, stdout, stderr) => {
+      if (err) {
         const errMsg = stderr?.trim() || stdout?.trim() || err?.message || "Unknown error";
-        new Notice("Switch failed: " + errMsg.split("\n").pop());
+        new Notice("Start failed: " + errMsg.split("\n").pop());
         return;
       }
-      new Notice("Vault switched!");
+      new Notice("Vault started!");
       this._updateStatusBar();
       let polls = 0;
       const fastPoll = setInterval(() => {
@@ -808,7 +796,8 @@ class DavyJonesPlugin extends Plugin {
 
     const shell = process.env.SHELL || "/bin/bash";
     const fixScript = path.join(this._projectRoot, "scripts", "fix_credentials.sh");
-    const cmd = `${shell} -l -c 'bash "${fixScript}" && cd "${this._projectRoot}" && docker compose up -d dispatcher'`;
+    const davyjones = path.join(this._projectRoot, "davyjones");
+    const cmd = `${shell} -l -c 'bash "${fixScript}" && "${davyjones}" start --vault "${this._vaultPath}"'`;
 
     // Longer timeout: claude login waits for browser OAuth callback
     exec(cmd, { timeout: 300000, cwd: this._projectRoot }, (err, stdout, stderr) => {

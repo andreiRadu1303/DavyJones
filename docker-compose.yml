@@ -1,22 +1,21 @@
-name: davyjones
-
 services:
   dispatcher:
     build:
       context: ./dispatcher
       dockerfile: Dockerfile
-    container_name: davyjones-dispatcher
     volumes:
       - ${VAULT_DIR:?Set VAULT_DIR in .env}:/vault
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.claude-credentials.json:/tmp/claude-credentials.json:rw
-      - dispatcher-state:/app/state
+      - ${STATE_DIR:-./.state/default}:/app/state
     environment:
       - VAULT_PATH=/vault
       - VAULT_HOST_PATH=${VAULT_DIR}
       - CREDS_HOST_PATH=${PWD}/.claude-credentials.json
-      - DOCKER_NETWORK=davyjones_davyjones
+      - DOCKER_NETWORK=davyjones
       - AGENT_IMAGE=davyjones-agent
+      - DISPATCHER_HOSTNAME=${DISPATCHER_HOSTNAME:-davyjones-dispatcher-1}
+      - VAULT_SLUG=${VAULT_SLUG:-default}
       - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
       - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-1200}
       - OVERSEER_TIMEOUT_SECONDS=${OVERSEER_TIMEOUT_SECONDS:-600}
@@ -49,7 +48,6 @@ services:
     build:
       context: ./auto_committer
       dockerfile: Dockerfile
-    container_name: davyjones-auto-committer
     volumes:
       - ${VAULT_DIR}:/vault
     environment:
@@ -69,7 +67,6 @@ services:
     build:
       context: ./obsidian-mcp
       dockerfile: Dockerfile
-    container_name: davyjones-obsidian-mcp
     volumes:
       - ${VAULT_DIR}:/vault:ro
     restart: unless-stopped
@@ -80,7 +77,6 @@ services:
     build:
       context: ./davyjones-mcp
       dockerfile: Dockerfile
-    container_name: davyjones-davyjones-mcp
     volumes:
       - ${VAULT_DIR:?Set VAULT_DIR in .env}:/vault
     environment:
@@ -93,7 +89,6 @@ services:
     build:
       context: ./slack-mcp
       dockerfile: Dockerfile
-    container_name: davyjones-slack-mcp
     environment:
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
     profiles:
@@ -104,7 +99,6 @@ services:
 
   gitlab-mcp:
     image: zereight050/gitlab-mcp:latest
-    container_name: davyjones-gitlab-mcp
     environment:
       - GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_TOKEN:-}
       - GITLAB_API_URL=https://gitlab.com
@@ -121,7 +115,6 @@ services:
     build:
       context: ./github-mcp
       dockerfile: Dockerfile
-    container_name: davyjones-github-mcp
     environment:
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN:-}
     profiles:
@@ -139,9 +132,7 @@ services:
     profiles:
       - build-only
 
-volumes:
-  dispatcher-state:
-
 networks:
   davyjones:
-    driver: bridge
+    external: true
+    name: davyjones

@@ -4,40 +4,11 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_SRC="$PROJECT_ROOT/obsidian-plugin"
 ENV_FILE="$PROJECT_ROOT/.env"
+VAULTS_REGISTRY="$PROJECT_ROOT/.davyjones-vaults.json"
+STATE_ROOT="$PROJECT_ROOT/.state"
+ALL_PROFILES="--profile build-only --profile slack --profile gitlab --profile github"
 
 # ── Helpers ───────────────────────────────────────────────────────
-
-# Vault-specific keys that get cleared/merged on switch
-_VAULT_KEYS=(CLAUDE_CODE_OAUTH_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN GITLAB_TOKEN GITLAB_MCP_URL GITHUB_TOKEN GITHUB_REPO GITHUB_POLL_INTERVAL SLACK_MCP_ENABLED GITHUB_MCP_ENABLED GITLAB_MCP_ENABLED GOOGLE_WORKSPACE_ENABLED GWS_CONFIG_PATH)
-
-merge_vault_env() {
-    local vault_dir="$1"
-    local env_file="$2"
-    local vault_env="$vault_dir/.davyjones.env"
-
-    for key in "${_VAULT_KEYS[@]}"; do
-        if grep -q "^${key}=" "$env_file" 2>/dev/null; then
-            _sed_inplace "s|^${key}=.*|${key}=|" "$env_file"
-        fi
-    done
-
-    if [ -f "$vault_env" ]; then
-        while IFS= read -r line; do
-            [[ "$line" =~ ^[[:space:]]*# ]] && continue
-            [[ -z "${line// /}" ]] && continue
-            local key="${line%%=*}"
-            local value="${line#*=}"
-            key="$(echo "$key" | xargs)"
-            [ -z "$key" ] && continue
-            if grep -q "^${key}=" "$env_file" 2>/dev/null; then
-                _sed_inplace "s|^${key}=.*|${key}=${value}|" "$env_file"
-            else
-                echo "${key}=${value}" >> "$env_file"
-            fi
-        done < "$vault_env"
-        echo "  Loaded vault tokens from .davyjones.env"
-    fi
-}
 
 # Cross-platform sed -i
 _sed_inplace() {
@@ -52,7 +23,6 @@ _sed_inplace() {
 open_in_terminal() {
     local cmd="$1"
     local title="${2:-DavyJones}"
-
     case "$(uname -s)" in
         Darwin)
             osascript <<APPLE
@@ -61,7 +31,6 @@ tell application "Terminal"
     do script "cd '${PROJECT_ROOT}' && ${cmd}"
 end tell
 APPLE
-            echo "  Opened Terminal window."
             ;;
         Linux)
             local term=""
@@ -69,39 +38,25 @@ APPLE
                 command -v "$t" &>/dev/null && term="$t" && break
             done
             if [ -z "$term" ]; then
-                echo "  No terminal emulator found — running in current terminal."
                 eval "$cmd"
                 return
             fi
             case "$term" in
-                gnome-terminal)
-                    "$term" --title="$title" -- bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" &
-                    ;;
-                konsole)
-                    "$term" -e bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" &
-                    ;;
-                *)
-                    "$term" -e "bash -c 'cd \"${PROJECT_ROOT}\" && ${cmd}; exec bash'" &
-                    ;;
+                gnome-terminal) "$term" --title="$title" -- bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" & ;;
+                konsole)        "$term" -e bash -c "cd '${PROJECT_ROOT}' && ${cmd}; exec bash" & ;;
+                *)              "$term" -e "bash -c 'cd \"${PROJECT_ROOT}\" && ${cmd}; exec bash'" & ;;
             esac
-            echo "  Opened $term window."
             ;;
-        *)
-            echo "  Unknown OS — running in current terminal."
-            eval "$cmd"
-            ;;
+        *) eval "$cmd" ;;
     esac
 }
 
 extract_credentials() {
     if [[ "$(uname -s)" != "Darwin" ]]; then
         echo "  Skipping Keychain extraction (not macOS)."
-        echo "  Set CLAUDE_CODE_OAUTH_TOKEN in your .env or vault's .davyjones.env."
         return 0
     fi
-
     local creds_file="$PROJECT_ROOT/.claude-credentials.json"
-
     local keychain_data=""
     local current_user
     current_user=$(whoami)
@@ -111,11 +66,8 @@ extract_credentials() {
         true
     else
         echo "  WARNING: No Claude credentials in Keychain."
-        echo "  Run 'claude login' first, or set CLAUDE_CODE_OAUTH_TOKEN in .env."
         return 0
     fi
-
-    # Validate
     if ! echo "$keychain_data" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -126,10 +78,254 @@ if not oauth.get('accessToken'):
         echo "  WARNING: Keychain credentials invalid."
         return 0
     fi
-
     echo "$keychain_data" > "$creds_file"
     chmod 600 "$creds_file"
     echo "  Credentials extracted from Keychain."
+}
+
+# ── Multi-vault helpers ───────────────────────────────────────────
+
+_vault_slug() {
+    # Derive a Docker-safe slug from a vault path.
+    # /Users/me/My Cool Vault → my-cool-vault
+    local vpath="$1"
+    local base
+    base="$(basename "$vpath")"
+    echo "$base" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-//;s/-$//'
+}
+
+_project_name() {
+    echo "davyjones-$(_vault_slug "$1")"
+}
+
+_ensure_network() {
+    docker network create davyjones 2>/dev/null || true
+}
+
+_register_vault() {
+    local vault_abs="$1"
+    if [ ! -f "$VAULTS_REGISTRY" ]; then
+        echo "[]" > "$VAULTS_REGISTRY"
+    fi
+    python3 -c "
+import json, sys
+vault = '$vault_abs'
+with open('$VAULTS_REGISTRY') as f:
+    vaults = json.load(f)
+if vault not in vaults:
+    vaults.append(vault)
+    with open('$VAULTS_REGISTRY', 'w') as f:
+        json.dump(vaults, f, indent=2)
+    print(f'  Registered vault: {vault}')
+"
+}
+
+_registered_vaults() {
+    if [ -f "$VAULTS_REGISTRY" ]; then
+        python3 -c "
+import json
+with open('$VAULTS_REGISTRY') as f:
+    for v in json.load(f):
+        print(v)
+"
+    fi
+}
+
+_gen_vault_env() {
+    # Generate a combined env file for a vault's compose project.
+    # Merges: root .env globals + vault .davyjones.env + derived vars.
+    local vault_abs="$1"
+    local slug
+    slug="$(_vault_slug "$vault_abs")"
+    local project
+    project="$(_project_name "$vault_abs")"
+    local state_dir="$STATE_ROOT/$slug"
+    mkdir -p "$state_dir"
+
+    local tmpfile
+    tmpfile="$(mktemp)"
+
+    # Start with root .env (global tuning params)
+    if [ -f "$ENV_FILE" ]; then
+        grep -v "^#" "$ENV_FILE" | grep -v "^$" >> "$tmpfile" 2>/dev/null || true
+    fi
+
+    # Override with vault-specific config
+    local vault_env="$vault_abs/.davyjones.env"
+    if [ -f "$vault_env" ]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// /}" ]] && continue
+            local key="${line%%=*}"
+            local value="${line#*=}"
+            key="$(echo "$key" | xargs)"
+            [ -z "$key" ] && continue
+            # Remove existing entry, then append
+            grep -v "^${key}=" "$tmpfile" > "${tmpfile}.tmp" 2>/dev/null || true
+            mv "${tmpfile}.tmp" "$tmpfile"
+            echo "${key}=${value}" >> "$tmpfile"
+        done < "$vault_env"
+    fi
+
+    # Derived vars (override anything above)
+    for key in VAULT_DIR STATE_DIR DISPATCHER_HOSTNAME VAULT_SLUG DOCKER_NETWORK; do
+        grep -v "^${key}=" "$tmpfile" > "${tmpfile}.tmp" 2>/dev/null || true
+        mv "${tmpfile}.tmp" "$tmpfile"
+    done
+    cat >> "$tmpfile" <<EOF
+VAULT_DIR=$vault_abs
+STATE_DIR=$state_dir
+DISPATCHER_HOSTNAME=${project}-dispatcher-1
+VAULT_SLUG=$slug
+DOCKER_NETWORK=davyjones
+EOF
+
+    echo "$tmpfile"
+}
+
+_detect_profiles() {
+    # Read a vault's .davyjones.env and detect which MCP profiles to enable.
+    local vault_abs="$1"
+    local vault_env="$vault_abs/.davyjones.env"
+    local profiles=""
+
+    _env_val() {
+        grep "^${1}=" "$vault_env" 2>/dev/null | cut -d= -f2- || echo ""
+    }
+
+    _is_enabled() {
+        local val
+        val="$(_env_val "$1")"
+        [ "$val" != "false" ]
+    }
+
+    if [ -f "$vault_env" ]; then
+        [[ -n "$(_env_val SLACK_BOT_TOKEN)" ]] && _is_enabled "SLACK_MCP_ENABLED" && profiles="$profiles --profile slack"
+        [[ -n "$(_env_val GITLAB_TOKEN)" ]] && _is_enabled "GITLAB_MCP_ENABLED" && profiles="$profiles --profile gitlab"
+        [[ -n "$(_env_val GITHUB_TOKEN)" ]] && _is_enabled "GITHUB_MCP_ENABLED" && profiles="$profiles --profile github"
+    fi
+
+    echo "$profiles"
+}
+
+_start_vault() {
+    # Start a single vault's compose project.
+    local vault_abs="$1"
+    local foreground="${2:-false}"
+    local slug
+    slug="$(_vault_slug "$vault_abs")"
+    local project
+    project="$(_project_name "$vault_abs")"
+
+    echo "  Starting vault: $(basename "$vault_abs") ($project, port $(_vault_port "$vault_abs"))"
+
+    local env_file
+    env_file="$(_gen_vault_env "$vault_abs")"
+    local profiles
+    profiles="$(_detect_profiles "$vault_abs")"
+
+    cd "$PROJECT_ROOT"
+    if [ "$foreground" = "true" ]; then
+        docker compose --project-name "$project" --env-file "$env_file" $profiles up --build
+    else
+        docker compose --project-name "$project" --env-file "$env_file" $profiles up --build -d
+    fi
+
+    rm -f "$env_file"
+}
+
+_stop_vault() {
+    local vault_abs="$1"
+    local project
+    project="$(_project_name "$vault_abs")"
+    echo "  Stopping: $(basename "$vault_abs") ($project)"
+    cd "$PROJECT_ROOT"
+    docker compose --project-name "$project" $ALL_PROFILES down 2>/dev/null || true
+}
+
+_vault_port() {
+    local vault_abs="$1"
+    local vault_env="$vault_abs/.davyjones.env"
+    if [ -f "$vault_env" ]; then
+        local port
+        port=$(grep "^HTTP_PORT=" "$vault_env" 2>/dev/null | cut -d= -f2- || echo "")
+        [ -n "$port" ] && echo "$port" && return
+    fi
+    echo "5555"
+}
+
+_is_vault_running() {
+    local vault_abs="$1"
+    local project
+    project="$(_project_name "$vault_abs")"
+    local running
+    running=$(docker compose --project-name "$project" ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+    [ "$running" -gt 0 ]
+}
+
+_resolve_vault() {
+    # Resolve a vault identifier to its full path.
+    # Accepts: full path, vault name (basename match), or slug.
+    local input="$1"
+
+    # Already a full path
+    if [[ "$input" == /* ]] && [ -d "$input" ]; then
+        echo "$input"
+        return 0
+    fi
+
+    # Try matching by basename or slug against registered vaults
+    local match=""
+    local input_lower
+    input_lower="$(echo "$input" | tr '[:upper:]' '[:lower:]')"
+    while IFS= read -r vault; do
+        [ -z "$vault" ] && continue
+        local vname
+        vname="$(basename "$vault")"
+        local vname_lower
+        vname_lower="$(echo "$vname" | tr '[:upper:]' '[:lower:]')"
+        local vslug
+        vslug="$(_vault_slug "$vault")"
+        if [ "$vname" = "$input" ] || [ "$vname_lower" = "$input_lower" ] || [ "$vslug" = "$input_lower" ]; then
+            match="$vault"
+            break
+        fi
+    done < <(_registered_vaults)
+
+    if [ -n "$match" ]; then
+        echo "$match"
+        return 0
+    fi
+
+    # Try as relative path
+    if [ -d "$input" ]; then
+        echo "$(cd "$input" && pwd)"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
+_next_free_port() {
+    # Scan all registered vaults for used HTTP_PORT values, return next free.
+    local used=()
+    while IFS= read -r vault; do
+        [ -z "$vault" ] && continue
+        local p
+        p="$(_vault_port "$vault")"
+        used+=("$p")
+    done < <(_registered_vaults)
+    local port=5555
+    while true; do
+        local taken=false
+        for u in "${used[@]:-}"; do
+            [ "$u" = "$port" ] && taken=true && break
+        done
+        [ "$taken" = "false" ] && break
+        port=$((port + 1))
+    done
+    echo "$port"
 }
 
 # ── Commands ──────────────────────────────────────────────────────
@@ -196,16 +392,15 @@ for v in data.get('vaults', {}).values():
     # 1. Install plugin (symlink)
     mkdir -p "$vault_abs/.obsidian/plugins"
     local plugin_dest="$vault_abs/.obsidian/plugins/davyjones"
-
     if [ -L "$plugin_dest" ]; then
         echo "  Plugin already symlinked."
     elif [ -d "$plugin_dest" ]; then
-        echo "  Replacing plugin copy with symlink..."
         rm -rf "$plugin_dest"
         ln -s "$PLUGIN_SRC" "$plugin_dest"
+        echo "  Replaced plugin with symlink."
     else
-        echo "  Installing plugin (symlink)..."
         ln -s "$PLUGIN_SRC" "$plugin_dest"
+        echo "  Installed plugin (symlink)."
     fi
 
     # 2. Enable in community-plugins.json
@@ -231,7 +426,7 @@ with open('$community_plugins', 'w') as f:
     echo "{\"projectRoot\": \"$PROJECT_ROOT\"}" > "$vault_abs/.obsidian/davyjones-config.json"
     echo "  Plugin configured."
 
-    # 4. Create/update .env
+    # 4. Create/update root .env (just for backward compat — VAULT_DIR points to last-setup vault)
     if [ -f "$ENV_FILE" ]; then
         if grep -q "^VAULT_DIR=" "$ENV_FILE"; then
             _sed_inplace "s|^VAULT_DIR=.*|VAULT_DIR=$vault_abs|" "$ENV_FILE"
@@ -242,14 +437,18 @@ with open('$community_plugins', 'w') as f:
         cp "$PROJECT_ROOT/.env.example" "$ENV_FILE" 2>/dev/null || true
         echo "VAULT_DIR=$vault_abs" >> "$ENV_FILE"
     fi
-    echo "  .env configured (VAULT_DIR=$vault_abs)"
 
-    # 5. Create vault .davyjones.env
+    # 5. Create vault .davyjones.env with assigned port
     local vault_env="$vault_abs/.davyjones.env"
     if [ ! -f "$vault_env" ]; then
-        cat > "$vault_env" << 'ENVEOF'
+        local assigned_port
+        assigned_port="$(_next_free_port)"
+        cat > "$vault_env" << ENVEOF
 # DavyJones vault configuration
 # Edit via Obsidian Settings > DavyJones, or manually here.
+
+# Dispatcher HTTP port (unique per vault for multi-vault support)
+HTTP_PORT=$assigned_port
 
 # Claude authentication (long-lived token from 'claude setup-token')
 CLAUDE_CODE_OAUTH_TOKEN=
@@ -266,13 +465,26 @@ GITLAB_TOKEN=
 SLACK_BOT_TOKEN=
 SLACK_APP_TOKEN=
 ENVEOF
-        echo "  Created .davyjones.env in vault"
+        echo "  Created .davyjones.env (port=$assigned_port)"
+    else
+        # Ensure HTTP_PORT exists
+        if ! grep -q "^HTTP_PORT=" "$vault_env" 2>/dev/null; then
+            local assigned_port
+            assigned_port="$(_next_free_port)"
+            echo "HTTP_PORT=$assigned_port" >> "$vault_env"
+            echo "  Assigned HTTP_PORT=$assigned_port"
+        fi
     fi
 
-    # 6. Merge vault env
-    merge_vault_env "$vault_abs" "$ENV_FILE"
+    # 6. Register vault
+    _register_vault "$vault_abs"
 
-    # 7. Git init
+    # 7. Create state directory
+    local slug
+    slug="$(_vault_slug "$vault_abs")"
+    mkdir -p "$STATE_ROOT/$slug"
+
+    # 8. Git init
     if [ -f "$vault_abs/.gitignore" ]; then
         grep -q "^\.davyjones$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones" >> "$vault_abs/.gitignore"
         grep -q "^\.davyjones\.env$" "$vault_abs/.gitignore" 2>/dev/null || echo ".davyjones.env" >> "$vault_abs/.gitignore"
@@ -296,7 +508,7 @@ EOF
         )
     fi
 
-    # 8. Extract credentials
+    # 9. Extract credentials
     echo ""
     extract_credentials
 
@@ -307,74 +519,242 @@ EOF
 }
 
 cmd_start() {
-    if [ ! -f "$ENV_FILE" ]; then
-        echo "No .env found. Run './davyjones setup' first."
-        exit 1
-    fi
+    local target_vault=""
+    local start_all=false
+    local foreground=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --vault) target_vault="$2"; shift 2 ;;
+            --all|all) start_all=true; shift ;;
+            --here)  foreground=true; shift ;;
+            -*)      shift ;;
+            *)       target_vault="$1"; shift ;;
+        esac
+    done
 
     echo "=== DavyJones Start ==="
-
-    # Extract credentials
     extract_credentials
 
-    # Merge vault env
-    local vault_dir
-    vault_dir=$(grep "^VAULT_DIR=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
-    if [ -n "$vault_dir" ]; then
-        merge_vault_env "$vault_dir" "$ENV_FILE"
+    # Ensure shared network exists
+    _ensure_network
+
+    # Build agent image once
+    echo "Building agent image..."
+    cd "$PROJECT_ROOT"
+    docker compose --project-name davyjones-build --profile build-only build agent 2>/dev/null || \
+        docker compose --profile build-only build agent
+
+    if [ "$start_all" = "true" ]; then
+        echo ""
+        echo "Starting all registered vaults..."
+        while IFS= read -r vault; do
+            [ -z "$vault" ] && continue
+            [ ! -d "$vault" ] && echo "  Skipping missing vault: $vault" && continue
+            _start_vault "$vault"
+        done < <(_registered_vaults)
+    elif [ -n "$target_vault" ]; then
+        local resolved
+        resolved="$(_resolve_vault "$target_vault")" || true
+        if [ -z "$resolved" ]; then
+            echo "Error: vault '$target_vault' not found. Run './davyjones list' to see registered vaults."
+            exit 1
+        fi
+        _start_vault "$resolved" "$foreground"
+    else
+        # Backward compat: start vault from .env VAULT_DIR
+        local vault_dir
+        vault_dir=$(grep "^VAULT_DIR=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+        if [ -z "$vault_dir" ]; then
+            echo "No vault configured. Run './davyjones setup' first."
+            exit 1
+        fi
+        # Auto-register if not already
+        _register_vault "$vault_dir" 2>/dev/null || true
+        if [ "$foreground" = "true" ]; then
+            _start_vault "$vault_dir" "true"
+        else
+            _start_vault "$vault_dir"
+        fi
     fi
 
     echo ""
-
-    # Detect which optional profiles to enable based on configured tokens + MCP enabled flags
-    local profiles="--profile build-only"
-
-    _is_mcp_enabled() {
-        local key="$1"
-        local val
-        val=$(grep "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
-        # Default is true — only skip if explicitly "false"
-        [ "$val" != "false" ]
-    }
-
-    grep -q "^SLACK_BOT_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "SLACK_MCP_ENABLED" && profiles="$profiles --profile slack"
-    grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "GITLAB_MCP_ENABLED" && profiles="$profiles --profile gitlab"
-    grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null && _is_mcp_enabled "GITHUB_MCP_ENABLED" && profiles="$profiles --profile github"
-
-    # Build agent image first (it uses build-only profile, not started as a service)
-    echo "Building agent image..."
-    cd "$PROJECT_ROOT"
-    docker compose $profiles build agent
-
-    if [ "${1:-}" = "--here" ]; then
-        echo "Building and starting..."
-        docker compose $profiles up --build
-    else
-        echo "Opening terminal with DavyJones services..."
-        open_in_terminal "docker compose $profiles up --build"
-        echo ""
-        echo "Stop with: ./davyjones stop"
-    fi
+    echo "Stop with: ./davyjones stop"
 }
 
 cmd_stop() {
-    echo "Stopping DavyJones..."
-    cd "$PROJECT_ROOT"
-    docker compose --profile slack --profile gitlab --profile github down
+    local target=""
+    local stop_all=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --vault) target="$2"; shift 2 ;;
+            --all|all) stop_all=true; shift ;;
+            -*)    shift ;;
+            *)     target="$1"; shift ;;
+        esac
+    done
+
+    echo "=== DavyJones Stop ==="
+
+    if [ "$stop_all" = "true" ] || [ -z "$target" ]; then
+        # Stop all registered vaults
+        while IFS= read -r vault; do
+            [ -z "$vault" ] && continue
+            if _is_vault_running "$vault" 2>/dev/null; then
+                _stop_vault "$vault"
+            fi
+        done < <(_registered_vaults)
+
+        # Also stop any unregistered davyjones-* compose projects
+        for project in $(docker compose ls --format json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    for p in data:
+        name = p.get('Name', '')
+        if name.startswith('davyjones-') and name != 'davyjones-build':
+            print(name)
+except: pass
+" 2>/dev/null); do
+            echo "  Stopping orphan project: $project"
+            docker compose --project-name "$project" $ALL_PROFILES down 2>/dev/null || true
+        done
+
+        # Legacy fallback
+        cd "$PROJECT_ROOT"
+        docker compose $ALL_PROFILES down 2>/dev/null || true
+    else
+        local resolved
+        resolved="$(_resolve_vault "$target")" || true
+        if [ -z "$resolved" ]; then
+            echo "Error: vault '$target' not found. Run './davyjones list' to see registered vaults."
+            exit 1
+        fi
+        _stop_vault "$resolved"
+    fi
+
     echo "Stopped."
 }
 
+cmd_list() {
+    echo "=== DavyJones Vaults ==="
+    echo ""
+    if [ ! -f "$VAULTS_REGISTRY" ]; then
+        echo "No vaults registered. Run './davyjones setup <vault-path>'."
+        return
+    fi
+    printf "  %-30s %-8s %-10s %s\n" "VAULT" "PORT" "STATUS" "PROJECT"
+    printf "  %-30s %-8s %-10s %s\n" "-----" "----" "------" "-------"
+    while IFS= read -r vault; do
+        [ -z "$vault" ] && continue
+        local name
+        name="$(basename "$vault")"
+        local port
+        port="$(_vault_port "$vault")"
+        local project
+        project="$(_project_name "$vault")"
+        local status="stopped"
+        if _is_vault_running "$vault" 2>/dev/null; then
+            status="running"
+        fi
+        printf "  %-30s %-8s %-10s %s\n" "$name" "$port" "$status" "$project"
+    done < <(_registered_vaults)
+}
+
 cmd_logs() {
+    local target=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --vault) target="$2"; shift 2 ;;
+            -*)      shift ;;
+            *)       target="$1"; shift ;;
+        esac
+    done
+
     cd "$PROJECT_ROOT"
-    docker compose logs -f
+
+    if [ -n "$target" ]; then
+        local resolved
+        resolved="$(_resolve_vault "$target")" || true
+        if [ -z "$resolved" ]; then
+            echo "Error: vault '$target' not found."
+            exit 1
+        fi
+        local project
+        project="$(_project_name "$resolved")"
+        docker compose --project-name "$project" logs -f
+    else
+        # Follow logs for all running vaults
+        local pids=()
+        while IFS= read -r vault; do
+            [ -z "$vault" ] && continue
+            if _is_vault_running "$vault" 2>/dev/null; then
+                local project
+                project="$(_project_name "$vault")"
+                docker compose --project-name "$project" logs -f &
+                pids+=($!)
+            fi
+        done < <(_registered_vaults)
+
+        if [ ${#pids[@]} -eq 0 ]; then
+            echo "No running vaults found."
+            return
+        fi
+
+        # Wait for all log followers
+        trap 'kill ${pids[@]} 2>/dev/null' EXIT
+        wait
+    fi
 }
 
 cmd_clean() {
-    echo "Stopping and removing all DavyJones containers, images, and volumes..."
-    cd "$PROJECT_ROOT"
-    docker compose --profile build-only --profile slack --profile gitlab --profile github down --rmi all --volumes --remove-orphans
-    # Remove external images that docker compose doesn't clean up
-    docker images --format "{{.Repository}}:{{.Tag}}" | grep -i "gitlab-mcp\|github-mcp" | xargs -r docker rmi 2>/dev/null || true
+    local target=""
+    local clean_all=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --vault) target="$2"; shift 2 ;;
+            --all|all) clean_all=true; shift ;;
+            -*)    shift ;;
+            *)     target="$1"; shift ;;
+        esac
+    done
+
+    echo "=== DavyJones Clean ==="
+
+    if [ -n "$target" ] && [ "$clean_all" = "false" ]; then
+        local resolved
+        resolved="$(_resolve_vault "$target")" || true
+        if [ -z "$resolved" ]; then
+            echo "Error: vault '$target' not found. Run './davyjones list' to see registered vaults."
+            exit 1
+        fi
+        local project
+        project="$(_project_name "$resolved")"
+        echo "  Cleaning: $project"
+        docker compose --project-name "$project" $ALL_PROFILES down --rmi all --volumes --remove-orphans 2>/dev/null || true
+    else
+        # Clean all registered vault projects
+        while IFS= read -r vault; do
+            [ -z "$vault" ] && continue
+            local project
+            project="$(_project_name "$vault")"
+            echo "  Cleaning: $project"
+            docker compose --project-name "$project" $ALL_PROFILES down --rmi all --volumes --remove-orphans 2>/dev/null || true
+        done < <(_registered_vaults)
+
+        # Also clean legacy project name
+        docker compose $ALL_PROFILES down --rmi all --volumes --remove-orphans 2>/dev/null || true
+
+        # Remove shared network
+        docker network rm davyjones 2>/dev/null || true
+
+        # Remove external images
+        docker images --format "{{.Repository}}:{{.Tag}}" | grep -i "gitlab-mcp\|github-mcp" | xargs -r docker rmi 2>/dev/null || true
+    fi
+
     echo "Clean."
 }
 
@@ -390,24 +770,36 @@ case "${1:-}" in
         cmd_start "$@"
         ;;
     stop)
-        cmd_stop
+        shift
+        cmd_stop "$@"
+        ;;
+    list)
+        cmd_list
         ;;
     logs)
-        cmd_logs
+        shift
+        cmd_logs "$@"
         ;;
     clean)
-        cmd_clean
+        shift
+        cmd_clean "$@"
         ;;
     *)
         echo "DavyJones — AI agent for Obsidian"
         echo ""
-        echo "Usage: ./davyjones <command>"
+        echo "Usage: ./davyjones <command> [vault-name|path]"
         echo ""
         echo "Commands:"
-        echo "  setup [vault-path]   Install plugin and configure vault"
-        echo "  start [--here]       Build and start services (opens new terminal)"
-        echo "  stop                 Stop all services"
-        echo "  clean                Stop and remove all containers, images, and volumes"
-        echo "  logs                 Tail live service logs"
+        echo "  setup [vault-path]          Install plugin and configure vault"
+        echo "  start [vault] [--here]      Start a vault (default: last configured)"
+        echo "  start --all                 Start all registered vaults"
+        echo "  stop [vault]                Stop a vault (default: all)"
+        echo "  stop --all                  Stop all running vaults"
+        echo "  list                        Show registered vaults and status"
+        echo "  logs [vault]                Tail live service logs"
+        echo "  clean [vault]               Remove containers, images, volumes"
+        echo "  clean --all                 Clean everything"
+        echo ""
+        echo "Vault can be a name (e.g., 'TestVault') or full path."
         ;;
 esac

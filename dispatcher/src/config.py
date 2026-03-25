@@ -38,5 +38,14 @@ SCRIBE_TIMEOUT = int(os.environ.get("SCRIBE_TIMEOUT", "120"))
 # Docker container spawning
 VAULT_HOST_PATH = os.environ.get("VAULT_HOST_PATH", "")
 CREDS_HOST_PATH = os.environ.get("CREDS_HOST_PATH", "")
-DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "davyjones_davyjones")
+DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "davyjones")
 AGENT_IMAGE = os.environ.get("AGENT_IMAGE", "davyjones-agent")
+
+# Multi-vault: dispatcher identity
+DISPATCHER_HOSTNAME = os.environ.get("DISPATCHER_HOSTNAME", "davyjones-dispatcher-1")
+VAULT_SLUG = os.environ.get("VAULT_SLUG", "default")
+
+# Container runtime: "docker" (local) or "k8s" (cloud)
+RUNTIME_BACKEND = os.environ.get("RUNTIME_BACKEND", "docker")
+K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
+K8S_AGENT_IMAGE = os.environ.get("K8S_AGENT_IMAGE", "davyjones-agent:latest")

@@ -4,6 +4,10 @@
 .claude/
 secrets/
 
+# Multi-vault state
+.state/
+.davyjones-vaults.json
+
 # Python
 __pycache__/
 *.pyc

@@ -14,7 +14,7 @@ from typing import Any
 import docker
 import docker.errors
 
-from src.config import DOCKER_NETWORK
+from src.config import DOCKER_NETWORK, VAULT_SLUG
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +62,9 @@ def _get_client() -> docker.DockerClient:
 
 
 def _container_name(service: str, instance_id: str) -> str:
-    """Derive a deterministic container name."""
+    """Derive a deterministic container name, scoped to this vault."""
     safe_id = instance_id.lower().replace(" ", "-")
-    return f"davyjones-{service}-mcp-{safe_id}"
+    return f"davyjones-{VAULT_SLUG}-{service}-mcp-{safe_id}"
 
 
 def _allocate_port() -> int:

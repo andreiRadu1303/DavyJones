@@ -6,3 +6,4 @@ pydantic-settings==2.7.1
 docker==7.1.0
 slack-bolt==1.21.3
 flask==3.1.0
+kubernetes==31.0.0
