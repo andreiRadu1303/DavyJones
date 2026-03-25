@@ -110,7 +110,7 @@ class DavyJonesPlugin extends Plugin {
     // ── File explorer decoration: mark files touched by Claude agents ──
     // Clear any stale markers from previous session on startup
     this.app.workspace.onLayoutReady(() => {
-      fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+      this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
       setTimeout(() => this._pollClaudeChanges(), 1000);
     });
     // Re-apply decorations when file explorer re-renders (e.g. folder expand/collapse)
@@ -123,7 +123,7 @@ class DavyJonesPlugin extends Plugin {
       name: "Clear Claude file change markers",
       callback: async () => {
         try {
-          await fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" });
+          await this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" });
         } catch {}
         this._claudeTouchedFiles.clear();
         this._decorateFileExplorer();
@@ -135,9 +135,11 @@ class DavyJonesPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new DavyJonesSettingTab(this.app, this));
 
-    // Cloud git sync (every 15s when in cloud mode)
+    // Cloud mode: git sync (every 15s) + heartbeat polling (every 10s)
     if (this._isCloudMode()) {
+      this._pollCloudHeartbeat();
       this.registerInterval(window.setInterval(() => this._cloudGitSync(), 15000));
+      this.registerInterval(window.setInterval(() => this._pollCloudHeartbeat(), 10000));
     }
 
     // Periodic refresh
@@ -173,7 +175,7 @@ class DavyJonesPlugin extends Plugin {
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
     // Clear server-side markers so next session starts clean
-    fetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+    this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
     this._claudeTouchedFiles.clear();
     this._decorateFileExplorer(); // remove all markers
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
@@ -290,7 +292,7 @@ class DavyJonesPlugin extends Plugin {
    */
   async _pollClaudeChanges() {
     try {
-      const resp = await fetch(`${this._apiBase()}/api/claude-changes`);
+      const resp = await this._cloudFetch(`${this._apiBase()}/api/claude-changes`);
       if (!resp.ok) return;
       const data = await resp.json();
       const files = data.files || [];
@@ -591,6 +593,10 @@ class DavyJonesPlugin extends Plugin {
   }
 
   _applyServiceConfig() {
+    if (this._isCloudMode()) {
+      return this._applyServiceConfigCloud();
+    }
+
     if (!this._projectRoot) {
       new Notice("DavyJones project path not configured.");
       return;
@@ -612,9 +618,47 @@ class DavyJonesPlugin extends Plugin {
     });
   }
 
+  async _applyServiceConfigCloud() {
+    new Notice("Applying configuration...");
+    try {
+      const env = this._readDavyJonesEnv();
+      const vaultId = env.DAVYJONES_VAULT_ID;
+      if (!vaultId) {
+        new Notice("No DAVYJONES_VAULT_ID configured.");
+        return;
+      }
+      const config = this._readDavyJonesEnv();
+      const rules = this._readVaultRules();
+      const resp = await this._cloudFetch(`${this._apiBase()}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claude_token: config.CLAUDE_CODE_OAUTH_TOKEN || null,
+          github_token: config.GITHUB_TOKEN || null,
+          gitlab_token: config.GITLAB_TOKEN || null,
+          slack_bot_token: config.SLACK_BOT_TOKEN || null,
+          slack_app_token: config.SLACK_APP_TOKEN || null,
+          vault_rules: rules,
+        }),
+      });
+      if (!resp.ok) {
+        new Notice("Apply failed: " + (await resp.text()));
+        return;
+      }
+      new Notice("Configuration applied.");
+    } catch (e) {
+      new Notice("Apply failed: " + e.message);
+    }
+  }
+
   // ─── Heartbeat check ────────────────────────────────────────
 
   _readHeartbeat() {
+    // Cloud mode: use cached HTTP heartbeat result
+    if (this._isCloudMode()) {
+      return this._cloudHeartbeatCache || { active: false, creds: null, raw: null };
+    }
+    // Local mode: read .davyjones file
     try {
       const hbPath = path.join(this._vaultPath, ".davyjones");
       const raw = JSON.parse(fs.readFileSync(hbPath, "utf8"));
@@ -627,6 +671,27 @@ class DavyJonesPlugin extends Plugin {
 
   _isVaultActive() {
     return this._readHeartbeat().active;
+  }
+
+  /** Poll cloud API for dispatcher health (called periodically in cloud mode). */
+  async _pollCloudHeartbeat() {
+    if (!this._isCloudMode()) return;
+    try {
+      const resp = await this._cloudFetch(`${this._apiBase()}/health`);
+      if (resp.ok) {
+        const data = await resp.json();
+        this._cloudHeartbeatCache = {
+          active: data.active || false,
+          creds: data.creds || { status: "ok" },
+          raw: data,
+        };
+      } else {
+        this._cloudHeartbeatCache = { active: false, creds: null, raw: null };
+      }
+    } catch {
+      this._cloudHeartbeatCache = { active: false, creds: null, raw: null };
+    }
+    this._updateStatusBar();
   }
 
   // ─── Git status ──────────────────────────────────────────────
@@ -810,12 +875,17 @@ class DavyJonesPlugin extends Plugin {
   // ─── Switch vault ────────────────────────────────────────────
 
   async switchToThisVault() {
-    if (!this._projectRoot) {
-      new Notice("DavyJones project path not configured. Run scripts/setup.sh first.");
-      return;
-    }
     if (this._isVaultActive()) {
       new Notice("This vault is already active.");
+      return;
+    }
+
+    if (this._isCloudMode()) {
+      return this._switchToThisVaultCloud();
+    }
+
+    if (!this._projectRoot) {
+      new Notice("DavyJones project path not configured. Run scripts/setup.sh first.");
       return;
     }
 
@@ -841,9 +911,45 @@ class DavyJonesPlugin extends Plugin {
     });
   }
 
+  async _switchToThisVaultCloud() {
+    new Notice("Activating vault on cloud...");
+    try {
+      const env = this._readDavyJonesEnv();
+      const vaultId = env.DAVYJONES_VAULT_ID;
+      if (!vaultId) {
+        new Notice("No DAVYJONES_VAULT_ID configured. Register this vault first.");
+        return;
+      }
+      const resp = await this._cloudFetch(`${this._apiBase()}/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        new Notice("Activation failed: " + text);
+        return;
+      }
+      new Notice("Vault activated!");
+      // Poll heartbeat until active
+      let polls = 0;
+      const fastPoll = setInterval(async () => {
+        await this._pollCloudHeartbeat();
+        polls++;
+        if (this._isVaultActive() || polls >= 20) clearInterval(fastPoll);
+      }, 3000);
+    } catch (e) {
+      new Notice("Failed to activate vault: " + e.message);
+    }
+  }
+
   // ─── Fix credentials ───────────────────────────────────────
 
   async _fixCredentials() {
+    if (this._isCloudMode()) {
+      new Notice("Update your Claude API key in DavyJones Settings.");
+      return;
+    }
+
     if (!this._projectRoot) {
       new Notice("DavyJones project path not configured. Run scripts/setup.sh first.");
       return;
@@ -1388,12 +1494,10 @@ class DavyJonesTaskModal extends Modal {
     }
 
     const scopeFiles = this._resolveScopeFiles();
-    const env = this.plugin._readDavyJonesEnv();
-    const port = env.HTTP_PORT || "5555";
-    const url = `http://localhost:${port}/api/task`;
+    const url = `${this.plugin._apiBase()}/api/task`;
 
     try {
-      const resp = await fetch(url, {
+      const resp = await this.plugin._cloudFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1483,15 +1587,11 @@ class DavyJonesLiveTasksView extends ItemView {
 
   refresh() { this._fetchAndRender(); }
 
-  _apiBase() {
-    const env = this.plugin._readDavyJonesEnv();
-    const port = env.HTTP_PORT || "5555";
-    return `http://localhost:${port}`;
-  }
+  _apiBase() { return this.plugin._apiBase(); }
 
   async _fetchAndRender() {
     try {
-      const resp = await fetch(`${this._apiBase()}/api/tasks/active`);
+      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/tasks/active`);
       if (!resp.ok) return;
       const data = await resp.json();
       const json = JSON.stringify(data.tasks);
@@ -1741,15 +1841,11 @@ class DavyJonesReportsView extends ItemView {
 
   refresh() { this._checkForNew(); }
 
-  _apiBase() {
-    const env = this.plugin._readDavyJonesEnv();
-    const port = env.HTTP_PORT || "5555";
-    return `http://localhost:${port}`;
-  }
+  _apiBase() { return this.plugin._apiBase(); }
 
   async _checkForNew() {
     try {
-      const resp = await fetch(`${this._apiBase()}/api/reports?limit=1&offset=0`);
+      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports?limit=1&offset=0`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (data.reports.length > 0 && (this._reports.length === 0 || data.reports[0].id !== this._reports[0].id)) {
@@ -1766,7 +1862,7 @@ class DavyJonesReportsView extends ItemView {
       this._expandedTasks.clear();
     }
     try {
-      const resp = await fetch(`${this._apiBase()}/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${this._offset}`);
+      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${this._offset}`);
       if (!resp.ok) { this._renderReports(); return; }
       const data = await resp.json();
       this._reports = this._reports.concat(data.reports);
@@ -1779,7 +1875,7 @@ class DavyJonesReportsView extends ItemView {
   async _loadReportDetail(reportId) {
     if (this._reportCache[reportId]) return this._reportCache[reportId];
     try {
-      const resp = await fetch(`${this._apiBase()}/api/reports/${reportId}`);
+      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports/${reportId}`);
       if (!resp.ok) return null;
       const detail = await resp.json();
       this._reportCache[reportId] = detail;
@@ -2899,12 +2995,10 @@ class DavyJonesEventModal extends Modal {
     btn.disabled = true;
     btn.textContent = "Dispatching…";
 
-    const env = this.plugin._readDavyJonesEnv();
-    const port = env.HTTP_PORT || "5555";
-    const url = `http://localhost:${port}/api/task`;
+    const url = `${this.plugin._apiBase()}/api/task`;
 
     try {
-      const resp = await fetch(url, {
+      const resp = await this.plugin._cloudFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
