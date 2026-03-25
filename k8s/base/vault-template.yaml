@@ -1,0 +1,232 @@
+# Template for per-user vault infrastructure.
+# The Central API creates these resources in namespace dj-{user_id}
+# when a user registers a vault. Variables in ${} are replaced at creation time.
+#
+# Usage: the Central API reads this template, substitutes variables,
+# and applies it via the Kubernetes API.
+
+---
+# Persistent volume for vault git clone
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    vault: ${VAULT_SLUG}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Persistent volume for dispatcher state (reports, .last_sha)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: state-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    vault: ${VAULT_SLUG}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# User credentials (Claude key, MCP tokens)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-credentials-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+type: Opaque
+stringData:
+  CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_TOKEN}"
+  GITHUB_TOKEN: "${GITHUB_TOKEN}"
+  GITLAB_TOKEN: "${GITLAB_TOKEN}"
+  SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+  SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
+
+---
+# Dispatcher deployment (1 per vault)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatcher-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: dispatcher
+    vault: ${VAULT_SLUG}
+spec:
+  replicas: ${REPLICAS}  # 0 for free (cold start), 1 for pro (warm)
+  selector:
+    matchLabels:
+      app: davyjones
+      component: dispatcher
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: dispatcher
+        vault: ${VAULT_SLUG}
+    spec:
+      serviceAccountName: dispatcher
+      initContainers:
+      # Clone vault from Forgejo on startup
+      - name: git-sync
+        image: alpine/git:latest
+        command:
+        - sh
+        - -c
+        - |
+          if [ -d /vault/.git ]; then
+            cd /vault && git pull --rebase origin main || true
+          else
+            git clone ${GIT_REPO_URL} /vault
+          fi
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+      containers:
+      - name: dispatcher
+        image: davyjones-dispatcher:latest
+        ports:
+        - containerPort: 5555
+        envFrom:
+        - secretRef:
+            name: vault-credentials-${VAULT_SLUG}
+        env:
+        - name: VAULT_PATH
+          value: /vault
+        - name: RUNTIME_BACKEND
+          value: k8s
+        - name: K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: K8S_AGENT_IMAGE
+          value: davyjones-agent:latest
+        - name: DISPATCHER_HOSTNAME
+          value: dispatcher-${VAULT_SLUG}
+        - name: VAULT_SLUG
+          value: ${VAULT_SLUG}
+        - name: DOCKER_NETWORK
+          value: ""
+        - name: HTTP_PORT
+          value: "5555"
+        - name: REDIS_URL
+          value: redis://redis.davyjones-system:6379/0
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+        - name: state
+          mountPath: /app/state
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: vault
+        persistentVolumeClaim:
+          claimName: vault-${VAULT_SLUG}
+      - name: state
+        persistentVolumeClaim:
+          claimName: state-${VAULT_SLUG}
+
+---
+# Dispatcher service (internal, Central API proxies to this)
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatcher-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: dispatcher
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 5555
+
+---
+# Obsidian MCP (read-only vault access for agents)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsidian-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: obsidian-mcp
+    vault: ${VAULT_SLUG}
+spec:
+  replicas: ${REPLICAS}
+  selector:
+    matchLabels:
+      app: davyjones
+      component: obsidian-mcp
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: obsidian-mcp
+        vault: ${VAULT_SLUG}
+    spec:
+      containers:
+      - name: obsidian-mcp
+        image: davyjones-obsidian-mcp:latest
+        ports:
+        - containerPort: 3010
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+      volumes:
+      - name: vault
+        persistentVolumeClaim:
+          claimName: vault-${VAULT_SLUG}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: obsidian-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: obsidian-mcp
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 3010
+
+---
+# Resource quota per user namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: user-quota
+  namespace: dj-${USER_ID}
+spec:
+  hard:
+    pods: "${MAX_PODS}"
+    requests.cpu: "${MAX_CPU}"
+    requests.memory: "${MAX_MEMORY}"

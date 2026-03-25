@@ -1,0 +1,38 @@
+# ServiceAccount for dispatcher pods — needs permission to create Jobs and ConfigMaps
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dispatcher
+  # Applied per-namespace (dj-{user_id})
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dispatcher-role
+  # Applied per-namespace
+rules:
+# Create/watch/delete Jobs (agent containers)
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+# Create/delete ConfigMaps (prompt injection)
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "get", "delete"]
+# Read pod logs (agent output collection)
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dispatcher-binding
+  # Applied per-namespace
+subjects:
+- kind: ServiceAccount
+  name: dispatcher
+roleRef:
+  kind: Role
+  name: dispatcher-role
+  apiGroup: rbac.authorization.k8s.io

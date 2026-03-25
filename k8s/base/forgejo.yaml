@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forgejo
+  namespace: davyjones-system
+spec:
+  serviceName: forgejo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forgejo
+  template:
+    metadata:
+      labels:
+        app: forgejo
+    spec:
+      containers:
+      - name: forgejo
+        image: codeberg.org/forgejo/forgejo:9
+        ports:
+        - containerPort: 3000
+          name: http
+        - containerPort: 22
+          name: ssh
+        env:
+        - name: FORGEJO__database__DB_TYPE
+          value: sqlite3
+        - name: FORGEJO__server__ROOT_URL
+          value: http://forgejo.davyjones-system:3000
+        - name: FORGEJO__server__DISABLE_SSH
+          value: "false"
+        - name: FORGEJO__service__DISABLE_REGISTRATION
+          value: "true"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgejo
+  namespace: davyjones-system
+spec:
+  selector:
+    app: forgejo
+  ports:
+  - port: 3000
+    name: http
+  - port: 22
+    name: ssh

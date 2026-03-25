@@ -1,0 +1,25 @@
+# KEDA ScaledObject for free-tier cold start.
+# Scales dispatcher from 0 → 1 when tasks are pending in Redis.
+# Applied per-vault in dj-{user_id} namespace.
+# Requires KEDA to be installed in the cluster.
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: dispatcher-scaler-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  scaleTargetRef:
+    name: dispatcher-${VAULT_SLUG}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 1800  # Scale to zero after 30 min idle
+  pollingInterval: 10
+  triggers:
+  # Scale up when there are pending tasks in Redis
+  - type: redis
+    metadata:
+      address: redis.davyjones-system:6379
+      listName: "vault:${VAULT_ID}:pending_tasks"
+      listLength: "1"
+      activationListLength: "1"
