@@ -4401,7 +4401,7 @@ class DavyJonesCloudOnboardingModal extends Modal {
         const userId = url.searchParams.get("user_id");
         const plan = url.searchParams.get("plan");
 
-        res.writeHead(200, { "Content-Type": "text/html" });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`
           <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#1a1a2e;color:#fff">
             <h2 style="color:#a882ff">✓ Signed in successfully!</h2>
