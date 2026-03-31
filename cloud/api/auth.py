@@ -69,7 +69,7 @@ async def login_redirect(provider: str, request: Request):
             f"https://github.com/login/oauth/authorize"
             f"?client_id={settings.github_client_id}"
             f"&scope=user:email"
-            f"&redirect_uri={settings.api_url}/auth/callback/github"
+            f"&redirect_uri={settings.api_url}/api/v1/auth/callback/github"
         )
     elif provider == "google":
         return RedirectResponse(
@@ -77,7 +77,7 @@ async def login_redirect(provider: str, request: Request):
             f"?client_id={settings.google_client_id}"
             f"&response_type=code"
             f"&scope=openid+email+profile"
-            f"&redirect_uri={settings.api_url}/auth/callback/google"
+            f"&redirect_uri={settings.api_url}/api/v1/auth/callback/google"
         )
     raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
@@ -132,7 +132,7 @@ async def oauth_callback(provider: str, code: str, db: AsyncSession = Depends(ge
                     "code": code,
                     "client_id": settings.google_client_id,
                     "client_secret": settings.google_client_secret,
-                    "redirect_uri": f"{settings.api_url}/auth/callback/google",
+                    "redirect_uri": f"{settings.api_url}/api/v1/auth/callback/google",
                     "grant_type": "authorization_code",
                 },
             )
@@ -159,6 +159,7 @@ async def oauth_callback(provider: str, code: str, db: AsyncSession = Depends(ge
     )
     user = result.scalar_one_or_none()
 
+    plan = "free"
     if not user:
         user = User(
             email=email,
@@ -167,17 +168,21 @@ async def oauth_callback(provider: str, code: str, db: AsyncSession = Depends(ge
             oauth_id=oauth_id,
         )
         db.add(user)
-        # Create free subscription
         sub = Subscription(user_id=user.id, plan="free", status="active")
         db.add(sub)
         await db.commit()
         await db.refresh(user)
+    else:
+        # Load subscription without lazy-loading
+        from sqlalchemy import select as sa_select
+        from cloud.models.subscription import Subscription as Sub
+        sub_result = await db.execute(sa_select(Sub).where(Sub.user_id == user.id))
+        sub = sub_result.scalar_one_or_none()
+        if sub:
+            plan = sub.plan
 
     # Issue JWT
     token = create_jwt(user.id, user.email)
-    plan = "free"
-    if user.subscription:
-        plan = user.subscription.plan
 
     # Return token as JSON (plugin will capture this)
     return TokenResponse(

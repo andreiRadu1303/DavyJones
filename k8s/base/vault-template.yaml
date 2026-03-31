@@ -96,7 +96,7 @@ spec:
           mountPath: /vault
       containers:
       - name: dispatcher
-        image: davyjones-dispatcher:latest
+        image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/dispatcher:latest
         ports:
         - containerPort: 5555
         envFrom:
@@ -112,7 +112,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         - name: K8S_AGENT_IMAGE
-          value: davyjones-agent:latest
+          value: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/agent:latest
         - name: DISPATCHER_HOSTNAME
           value: dispatcher-${VAULT_SLUG}
         - name: VAULT_SLUG
@@ -185,7 +185,7 @@ spec:
     spec:
       containers:
       - name: obsidian-mcp
-        image: davyjones-obsidian-mcp:latest
+        image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/obsidian-mcp:latest
         ports:
         - containerPort: 3010
         volumeMounts:
