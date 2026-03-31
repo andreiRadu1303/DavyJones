@@ -135,12 +135,13 @@ class DavyJonesPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new DavyJonesSettingTab(this.app, this));
 
-    // Cloud onboarding command
+    // Cloud onboarding command + ribbon button
     this.addCommand({
       id: "cloud-onboarding",
       name: "Connect to DavyJones Cloud",
       callback: () => new DavyJonesCloudOnboardingModal(this.app, this).open(),
     });
+    this.addRibbonIcon("cloud", "DavyJones: Connect to Cloud", () => new DavyJonesCloudOnboardingModal(this.app, this).open());
 
     // Show onboarding on first run (no .davyjones.env yet)
     this.app.workspace.onLayoutReady(() => {
