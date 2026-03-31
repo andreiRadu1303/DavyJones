@@ -135,6 +135,22 @@ class DavyJonesPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new DavyJonesSettingTab(this.app, this));
 
+    // Cloud onboarding command
+    this.addCommand({
+      id: "cloud-onboarding",
+      name: "Connect to DavyJones Cloud",
+      callback: () => new DavyJonesCloudOnboardingModal(this.app, this).open(),
+    });
+
+    // Show onboarding on first run (no .davyjones.env yet)
+    this.app.workspace.onLayoutReady(() => {
+      const env = this._readDavyJonesEnv();
+      const hasConfig = env.CLAUDE_CODE_OAUTH_TOKEN || env.DAVYJONES_CLOUD_TOKEN || env.HTTP_PORT;
+      if (!hasConfig) {
+        setTimeout(() => new DavyJonesCloudOnboardingModal(this.app, this).open(), 1000);
+      }
+    });
+
     // Cloud mode: git sync (every 15s) + heartbeat polling (every 10s)
     if (this._isCloudMode()) {
       this._pollCloudHeartbeat();
@@ -4293,6 +4309,224 @@ class DavyJonesSettingTab extends PluginSettingTab {
           .setButtonText("Open Control Panel")
           .onClick(() => this.plugin._activateControlPanel());
       });
+  }
+}
+
+// ─── Cloud Onboarding Modal ───────────────────────────────────────────────────
+class DavyJonesCloudOnboardingModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this._callbackServer = null;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("davyjones-onboarding");
+
+    // Header
+    contentEl.createEl("div", { cls: "davyjones-onboarding-logo", text: "⚓" });
+    contentEl.createEl("h2", { text: "Welcome to DavyJones", cls: "davyjones-onboarding-title" });
+    contentEl.createEl("p", {
+      text: "AI agents that work inside your Obsidian vault — automatically.",
+      cls: "davyjones-onboarding-subtitle",
+    });
+
+    // Step 1: Sign in
+    const step1 = contentEl.createDiv({ cls: "davyjones-onboarding-step" });
+    step1.createEl("div", { cls: "davyjones-onboarding-step-number", text: "1" });
+    const step1body = step1.createDiv({ cls: "davyjones-onboarding-step-body" });
+    step1body.createEl("h3", { text: "Sign in with Google" });
+    step1body.createEl("p", { text: "Your account lets you connect vaults, track tasks, and manage your subscription." });
+
+    this._signInStatus = step1body.createEl("div", { cls: "davyjones-onboarding-status" });
+
+    const signInBtn = step1body.createEl("button", {
+      text: "Sign in with Google",
+      cls: "davyjones-onboarding-btn davyjones-onboarding-btn-primary",
+    });
+    signInBtn.onclick = () => this._startOAuthFlow(signInBtn);
+
+    // Step 2: Claude API Key
+    const step2 = contentEl.createDiv({ cls: "davyjones-onboarding-step davyjones-onboarding-step-dimmed" });
+    this._step2El = step2;
+    step2.createEl("div", { cls: "davyjones-onboarding-step-number", text: "2" });
+    const step2body = step2.createDiv({ cls: "davyjones-onboarding-step-body" });
+    step2body.createEl("h3", { text: "Enter your Claude API key" });
+    step2body.createEl("p", { text: "Your key stays in your vault — we never store it on our servers." });
+
+    const keyRow = step2body.createDiv({ cls: "davyjones-onboarding-key-row" });
+    this._claudeKeyInput = keyRow.createEl("input", {
+      type: "password",
+      placeholder: "sk-ant-oat01-...",
+      cls: "davyjones-onboarding-input",
+    });
+    this._claudeKeyInput.addEventListener("input", () => this._validateStep2());
+
+    // Step 3: Connect vault
+    const step3 = contentEl.createDiv({ cls: "davyjones-onboarding-step davyjones-onboarding-step-dimmed" });
+    this._step3El = step3;
+    step3.createEl("div", { cls: "davyjones-onboarding-step-number", text: "3" });
+    const step3body = step3.createDiv({ cls: "davyjones-onboarding-step-body" });
+    step3body.createEl("h3", { text: "Connect this vault" });
+    step3body.createEl("p", { text: "Your vault is synced to the cloud so agents can work even when Obsidian is closed." });
+
+    this._connectStatus = step3body.createEl("div", { cls: "davyjones-onboarding-status" });
+    this._connectBtn = step3body.createEl("button", {
+      text: "Connect vault",
+      cls: "davyjones-onboarding-btn davyjones-onboarding-btn-primary",
+      disabled: true,
+    });
+    this._connectBtn.onclick = () => this._connectVault();
+  }
+
+  async _startOAuthFlow(btn) {
+    const CLOUD_API = "http://34-76-141-163.nip.io";
+    const CALLBACK_PORT = 27420;
+
+    btn.disabled = true;
+    btn.textContent = "Opening browser...";
+    this._signInStatus.textContent = "";
+
+    // Start local callback server to catch the token
+    const http = require("http");
+    let server;
+    const tokenPromise = new Promise((resolve, reject) => {
+      server = http.createServer((req, res) => {
+        const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
+        const token = url.searchParams.get("token");
+        const email = url.searchParams.get("email");
+        const userId = url.searchParams.get("user_id");
+        const plan = url.searchParams.get("plan");
+
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`
+          <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#1a1a2e;color:#fff">
+            <h2 style="color:#a882ff">✓ Signed in successfully!</h2>
+            <p>You can close this tab and return to Obsidian.</p>
+          </body></html>
+        `);
+        server.close();
+        if (token) resolve({ token, email, userId, plan });
+        else reject(new Error("No token in callback"));
+      });
+      server.listen(CALLBACK_PORT, "127.0.0.1");
+      server.on("error", reject);
+    });
+
+    // Open browser with redirect_to pointing at our local callback server
+    const loginUrl = `${CLOUD_API}/api/v1/auth/login/google?redirect_to=${encodeURIComponent(`http://localhost:${CALLBACK_PORT}`)}`;
+    require("electron").shell.openExternal(loginUrl);
+
+    this._signInStatus.textContent = "Waiting for sign-in...";
+    this._signInStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-pending";
+
+    try {
+      const { token, email, userId, plan } = await Promise.race([
+        tokenPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 120000)),
+      ]);
+
+      this._jwtToken = token;
+      this._userEmail = email;
+      this._userId = userId;
+
+      this._signInStatus.textContent = `✓ Signed in as ${email} (${plan} plan)`;
+      this._signInStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-ok";
+      btn.textContent = "✓ Signed in";
+
+      // Unlock step 2
+      this._step2El.removeClass("davyjones-onboarding-step-dimmed");
+      this._claudeKeyInput.focus();
+    } catch (err) {
+      server?.close();
+      this._signInStatus.textContent = `✗ Sign-in failed: ${err.message}`;
+      this._signInStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-error";
+      btn.disabled = false;
+      btn.textContent = "Sign in with Google";
+    }
+  }
+
+  _validateStep2() {
+    const key = this._claudeKeyInput.value.trim();
+    if (key.startsWith("sk-ant-") && key.length > 20) {
+      this._step3El.removeClass("davyjones-onboarding-step-dimmed");
+      this._connectBtn.disabled = false;
+    }
+  }
+
+  async _connectVault() {
+    const CLOUD_API = "http://34-76-141-163.nip.io";
+    this._connectBtn.disabled = true;
+    this._connectBtn.textContent = "Connecting...";
+    this._connectStatus.textContent = "";
+
+    const vaultName = path.basename(this.plugin._vaultPath);
+    const slug = vaultName.toLowerCase().replace(/[^a-z0-9]/g, "-");
+
+    try {
+      // Register vault on cloud
+      this._connectStatus.textContent = "Registering vault...";
+      const resp = await fetch(`${CLOUD_API}/api/v1/vaults`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this._jwtToken}`,
+        },
+        body: JSON.stringify({
+          name: vaultName,
+          slug,
+          claude_token: this._claudeKeyInput.value.trim(),
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || resp.statusText);
+      }
+
+      const vault = await resp.json();
+
+      // Write config to .davyjones.env
+      const config = this.plugin._readDavyJonesEnv();
+      config["DAVYJONES_CLOUD_API"] = CLOUD_API;
+      config["DAVYJONES_CLOUD_TOKEN"] = this._jwtToken;
+      config["DAVYJONES_VAULT_ID"] = vault.id;
+      config["CLAUDE_CODE_OAUTH_TOKEN"] = this._claudeKeyInput.value.trim();
+      this.plugin._writeDavyJonesEnv(config);
+
+      // Set up git remote for cloud sync
+      if (vault.git_url) {
+        this._connectStatus.textContent = "Setting up git sync...";
+        const shell = process.env.SHELL || "/bin/bash";
+        const { exec } = require("child_process");
+        await new Promise((resolve) => {
+          exec(
+            `${shell} -c 'cd "${this.plugin._vaultPath}" && git remote remove davyjones-cloud 2>/dev/null; git remote add davyjones-cloud "${vault.git_url}" && git push davyjones-cloud main --force 2>&1'`,
+            { timeout: 30000 },
+            resolve,
+          );
+        });
+      }
+
+      this._connectStatus.textContent = "✓ Vault connected! Agents are ready.";
+      this._connectStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-ok";
+      this._connectBtn.textContent = "✓ Connected";
+
+      new Notice("DavyJones: vault connected to cloud!", 5000);
+      setTimeout(() => this.close(), 2000);
+    } catch (err) {
+      this._connectStatus.textContent = `✗ ${err.message}`;
+      this._connectStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-error";
+      this._connectBtn.disabled = false;
+      this._connectBtn.textContent = "Try again";
+    }
+  }
+
+  onClose() {
+    this._callbackServer?.close();
+    this.contentEl.empty();
   }
 }
 

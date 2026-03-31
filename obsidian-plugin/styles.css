@@ -1,3 +1,124 @@
+/* ─── Cloud Onboarding Modal ──────────────────────────────── */
+
+.davyjones-onboarding {
+  padding: 8px 4px;
+  max-width: 480px;
+}
+
+.davyjones-onboarding-logo {
+  font-size: 48px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.davyjones-onboarding-title {
+  text-align: center;
+  font-size: 22px;
+  margin: 0 0 6px;
+}
+
+.davyjones-onboarding-subtitle {
+  text-align: center;
+  color: var(--text-muted);
+  margin: 0 0 24px;
+  font-size: 14px;
+}
+
+.davyjones-onboarding-step {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: var(--background-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  transition: opacity 0.2s;
+}
+
+.davyjones-onboarding-step-dimmed {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.davyjones-onboarding-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(124, 58, 237, 0.3);
+  color: rgb(168, 130, 255);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.davyjones-onboarding-step-body {
+  flex: 1;
+}
+
+.davyjones-onboarding-step-body h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.davyjones-onboarding-step-body p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.davyjones-onboarding-btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.davyjones-onboarding-btn-primary {
+  background: rgb(124, 58, 237);
+  color: white;
+}
+
+.davyjones-onboarding-btn-primary:hover:not(:disabled) {
+  background: rgb(109, 40, 217);
+}
+
+.davyjones-onboarding-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.davyjones-onboarding-status {
+  font-size: 12px;
+  margin-bottom: 8px;
+  min-height: 16px;
+}
+
+.davyjones-onboarding-status-ok { color: var(--color-green); }
+.davyjones-onboarding-status-error { color: var(--color-red); }
+.davyjones-onboarding-status-pending { color: var(--text-muted); }
+
+.davyjones-onboarding-key-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.davyjones-onboarding-input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+  font-family: monospace;
+}
+
 /* ─── Hide Obsidian's default properties panel ────────────── */
 .metadata-container {
   display: none !important;

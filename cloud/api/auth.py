@@ -62,14 +62,22 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/login/{provider}")
-async def login_redirect(provider: str, request: Request):
-    """Redirect to OAuth provider login page."""
+async def login_redirect(provider: str, request: Request, redirect_to: str = ""):
+    """Redirect to OAuth provider login page.
+
+    Optional redirect_to: after auth, redirect here with ?token=...&email=...
+    Used by the Obsidian plugin's local callback server.
+    """
+    import urllib.parse
+    state = urllib.parse.quote(redirect_to) if redirect_to else ""
+
     if provider == "github":
         return RedirectResponse(
             f"https://github.com/login/oauth/authorize"
             f"?client_id={settings.github_client_id}"
             f"&scope=user:email"
             f"&redirect_uri={settings.api_url}/api/v1/auth/callback/github"
+            f"&state={state}"
         )
     elif provider == "google":
         return RedirectResponse(
@@ -78,12 +86,13 @@ async def login_redirect(provider: str, request: Request):
             f"&response_type=code"
             f"&scope=openid+email+profile"
             f"&redirect_uri={settings.api_url}/api/v1/auth/callback/google"
+            f"&state={state}"
         )
     raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
 
 @router.get("/callback/{provider}")
-async def oauth_callback(provider: str, code: str, db: AsyncSession = Depends(get_db)):
+async def oauth_callback(provider: str, code: str, state: str = "", db: AsyncSession = Depends(get_db)):
     """Handle OAuth callback — exchange code for token, create/find user, return JWT."""
     import httpx
 
@@ -184,7 +193,19 @@ async def oauth_callback(provider: str, code: str, db: AsyncSession = Depends(ge
     # Issue JWT
     token = create_jwt(user.id, user.email)
 
-    # Return token as JSON (plugin will capture this)
+    # If plugin passed a redirect_to (local callback server), redirect there with token
+    if state:
+        import urllib.parse
+        redirect_to = urllib.parse.unquote(state)
+        params = urllib.parse.urlencode({
+            "token": token,
+            "email": user.email,
+            "user_id": user.id,
+            "plan": plan,
+        })
+        return RedirectResponse(f"{redirect_to}?{params}")
+
+    # Return token as JSON (browser flow)
     return TokenResponse(
         access_token=token,
         user_id=user.id,
