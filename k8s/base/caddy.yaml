@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy
+  namespace: davyjones-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: caddy
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: davyjones-system
+data:
+  Caddyfile: |
+    # Hostname is filled in once the LoadBalancer IP is known.
+    # See bootstrap notes — the HOST placeholder must be replaced before this
+    # ConfigMap is applied for the second time.
+    {$CADDY_HOST} {
+      encode gzip
+      reverse_proxy central-api.davyjones-system.svc.cluster.local:80
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caddy-data
+  namespace: davyjones-system
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy
+  namespace: davyjones-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: caddy
+  template:
+    metadata:
+      labels:
+        app: caddy
+    spec:
+      containers:
+      - name: caddy
+        image: caddy:2.8-alpine
+        env:
+        - name: CADDY_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: caddy-host
+              key: host
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - name: config
+          mountPath: /etc/caddy
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      volumes:
+      - name: config
+        configMap:
+          name: caddy-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: caddy-data

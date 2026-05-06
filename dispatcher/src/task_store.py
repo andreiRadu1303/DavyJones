@@ -29,7 +29,9 @@ class TaskState:
     status: str = "queued"  # queued, planning, executing, reporting, done, failed
     phase: str = ""
     description: str = ""
-    created_at: float = 0.0
+    created_at: float = 0.0   # when task was submitted
+    started_at: float = 0.0   # when agent job started executing
+    ended_at: float = 0.0     # when task reached done/failed
     updated_at: float = 0.0
     overseer_output: str = ""
     subtasks: list[dict] = field(default_factory=list)

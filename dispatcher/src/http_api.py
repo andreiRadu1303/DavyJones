@@ -487,6 +487,22 @@ def create_app(auto_commit_fn) -> Flask:
     def health():
         return jsonify({"status": "ok"})
 
+    @app.route("/api/reconcile", methods=["POST"])
+    def reconcile():
+        # Triggered by the cloud after a config save. Reloads vault rules and
+        # syncs MCP child containers (no-op in K8s mode for now — Phase 2).
+        try:
+            rules = load_vault_rules()
+            try:
+                from src.mcp_manager import sync as mcp_sync
+                mcp_sync(rules.get("serviceInstances", []))
+            except Exception:
+                logger.exception("mcp_sync failed during reconcile")
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            logger.exception("Reconcile failed")
+            return jsonify({"status": "error", "detail": str(e)}), 500
+
     return app
 
 

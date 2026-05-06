@@ -110,7 +110,7 @@ class DavyJonesPlugin extends Plugin {
     // ── File explorer decoration: mark files touched by Claude agents ──
     // Clear any stale markers from previous session on startup
     this.app.workspace.onLayoutReady(() => {
-      this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+      this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
       setTimeout(() => this._pollClaudeChanges(), 1000);
     });
     // Re-apply decorations when file explorer re-renders (e.g. folder expand/collapse)
@@ -123,7 +123,7 @@ class DavyJonesPlugin extends Plugin {
       name: "Clear Claude file change markers",
       callback: async () => {
         try {
-          await this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" });
+          await this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" });
         } catch {}
         this._claudeTouchedFiles.clear();
         this._decorateFileExplorer();
@@ -155,7 +155,7 @@ class DavyJonesPlugin extends Plugin {
     // Cloud mode: git sync (every 15s) + heartbeat polling (every 10s)
     if (this._isCloudMode()) {
       this._pollCloudHeartbeat();
-      this.registerInterval(window.setInterval(() => this._cloudGitSync(), 15000));
+      this.registerInterval(window.setInterval(() => this._cloudGitSync(), 5000));
       this.registerInterval(window.setInterval(() => this._pollCloudHeartbeat(), 10000));
     }
 
@@ -192,7 +192,7 @@ class DavyJonesPlugin extends Plugin {
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
     // Clear server-side markers so next session starts clean
-    this._cloudFetch(`${this._apiBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+    this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
     this._claudeTouchedFiles.clear();
     this._decorateFileExplorer(); // remove all markers
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
@@ -309,7 +309,7 @@ class DavyJonesPlugin extends Plugin {
    */
   async _pollClaudeChanges() {
     try {
-      const resp = await this._cloudFetch(`${this._apiBase()}/api/claude-changes`);
+      const resp = await this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes`);
       if (!resp.ok) return;
       const data = await resp.json();
       const files = data.files || [];
@@ -406,9 +406,36 @@ class DavyJonesPlugin extends Plugin {
 
   _apiBase() {
     const env = this._readDavyJonesEnv();
-    if (env.DAVYJONES_CLOUD_API) return env.DAVYJONES_CLOUD_API;
     const port = env.HTTP_PORT || "5555";
     return `http://localhost:${port}`;
+  }
+
+  /**
+   * In cloud mode, dispatcher endpoints live under /api/v1/vaults/{id}/...
+   * In local mode, they live directly at http://localhost:5555/api/...
+   *
+   * Usage:
+   *   local:  _dispatcherPath("/api/tasks/active") → http://localhost:5555/api/tasks/active
+   *   cloud:  _dispatcherPath("/api/tasks/active") → http://host/api/v1/vaults/{id}/tasks/active
+   */
+  _dispatcherBase() {
+    if (this._isCloudMode()) {
+      const env = this._readDavyJonesEnv();
+      const base = env.DAVYJONES_CLOUD_API || "";
+      const vaultId = env.DAVYJONES_VAULT_ID || "";
+      return `${base}/api/v1/vaults/${vaultId}`;
+    }
+    return this._apiBase();
+  }
+
+  /** Build a dispatcher URL, stripping the /api prefix in cloud mode. */
+  _dispatcherUrl(path) {
+    if (this._isCloudMode()) {
+      // path is like "/api/tasks/active" → strip leading /api → "/tasks/active"
+      const stripped = path.replace(/^\/api/, "");
+      return `${this._dispatcherBase()}${stripped}`;
+    }
+    return `${this._apiBase()}${path}`;
   }
 
   _isCloudMode() {
@@ -431,21 +458,24 @@ class DavyJonesPlugin extends Plugin {
   _cloudGitSync() {
     if (!this._isCloudMode()) return;
     const shell = process.env.SHELL || "/bin/bash";
+    const env = this._readDavyJonesEnv();
+    // Use stored remote URL (includes credentials) or fallback to named remote
+    const remote = env.DAVYJONES_GIT_REMOTE ? `"${env.DAVYJONES_GIT_REMOTE}"` : "davyjones-cloud";
 
     // Push any unpushed commits
     exec(
-      `${shell} -c 'cd "${this._vaultPath}" && git push davyjones-cloud main 2>&1'`,
+      `${shell} -c 'cd "${this._vaultPath}" && git push ${remote} main 2>&1'`,
       { timeout: 30000, cwd: this._vaultPath },
       (err, stdout) => {
-        if (err && !stdout.includes("Everything up-to-date")) {
+        if (err && !stdout?.includes("Everything up-to-date")) {
           console.log("DavyJones cloud push:", stdout?.trim() || err.message);
         }
       },
     );
 
-    // Pull agent changes from cloud
+    // Pull agent changes from cloud (stash local changes first so rebase doesn't block)
     exec(
-      `${shell} -c 'cd "${this._vaultPath}" && git pull --rebase davyjones-cloud main 2>&1'`,
+      `${shell} -c 'cd "${this._vaultPath}" && git stash && git pull --rebase ${remote} main && git stash pop 2>/dev/null; true'`,
       { timeout: 30000, cwd: this._vaultPath },
       (err, stdout) => {
         if (!err && stdout && !stdout.includes("Already up to date")) {
@@ -488,10 +518,10 @@ class DavyJonesPlugin extends Plugin {
     const sections = [
       { header: "# Claude Auth", keys: ["CLAUDE_CODE_OAUTH_TOKEN"] },
       { header: "# GitHub", keys: ["GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_MCP_ENABLED"] },
-      { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_MCP_URL", "GITLAB_MCP_ENABLED"] },
+      { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_API_URL", "GITLAB_MCP_ENABLED"] },
       { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_MCP_ENABLED"] },
       { header: "# Google Workspace", keys: ["GOOGLE_WORKSPACE_ENABLED", "GWS_CONFIG_PATH"] },
-      { header: "# Cloud", keys: ["DAVYJONES_CLOUD_API", "DAVYJONES_CLOUD_TOKEN", "DAVYJONES_VAULT_ID"] },
+      { header: "# Cloud", keys: ["DAVYJONES_CLOUD_API", "DAVYJONES_CLOUD_TOKEN", "DAVYJONES_VAULT_ID", "DAVYJONES_GIT_REMOTE"] },
     ];
 
     for (const section of sections) {
@@ -646,13 +676,14 @@ class DavyJonesPlugin extends Plugin {
       }
       const config = this._readDavyJonesEnv();
       const rules = this._readVaultRules();
-      const resp = await this._cloudFetch(`${this._apiBase()}/config`, {
+      const resp = await this._cloudFetch(`${this._dispatcherBase()}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           claude_token: config.CLAUDE_CODE_OAUTH_TOKEN || null,
           github_token: config.GITHUB_TOKEN || null,
           gitlab_token: config.GITLAB_TOKEN || null,
+          gitlab_api_url: config.GITLAB_API_URL || null,
           slack_bot_token: config.SLACK_BOT_TOKEN || null,
           slack_app_token: config.SLACK_APP_TOKEN || null,
           vault_rules: rules,
@@ -694,7 +725,7 @@ class DavyJonesPlugin extends Plugin {
   async _pollCloudHeartbeat() {
     if (!this._isCloudMode()) return;
     try {
-      const resp = await this._cloudFetch(`${this._apiBase()}/health`);
+      const resp = await this._cloudFetch(`${this._dispatcherBase()}/health`);
       if (resp.ok) {
         const data = await resp.json();
         this._cloudHeartbeatCache = {
@@ -937,7 +968,7 @@ class DavyJonesPlugin extends Plugin {
         new Notice("No DAVYJONES_VAULT_ID configured. Register this vault first.");
         return;
       }
-      const resp = await this._cloudFetch(`${this._apiBase()}/activate`, {
+      const resp = await this._cloudFetch(`${this._dispatcherBase()}/activate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -1038,12 +1069,17 @@ class DavyJonesPlugin extends Plugin {
 
     const file = view.file;
     const contentEl = view.contentEl;
-    contentEl.querySelector(".davyjones-nav")?.remove();
-
     const cache = this.app.metadataCache.getFileCache(file);
     const fm = cache?.frontmatter || {};
 
+    // Skip re-render if nav already exists and nothing has changed — prevents text jumping
+    const sig = `${file.path}|${fm.type||""}|${fm.status||""}|${(fm.tags||[]).join(",")}|${fm.created||""}`;
+    const existing = contentEl.querySelector(".davyjones-nav");
+    if (existing && existing.dataset.sig === sig) return;
+    existing?.remove();
+
     const nav = createDiv({ cls: "davyjones-nav" });
+    nav.dataset.sig = sig;
     const props = nav.createDiv({ cls: "davyjones-props" });
 
     // Type badge (clickable to cycle)
@@ -1511,7 +1547,10 @@ class DavyJonesTaskModal extends Modal {
     }
 
     const scopeFiles = this._resolveScopeFiles();
-    const url = `${this.plugin._apiBase()}/api/task`;
+    const isCloud = this.plugin._isCloudMode();
+    const url = isCloud
+      ? `${this.plugin._dispatcherBase()}/tasks`
+      : `${this.plugin._apiBase()}/api/task`;
 
     try {
       const resp = await this.plugin._cloudFetch(url, {
@@ -1604,17 +1643,22 @@ class DavyJonesLiveTasksView extends ItemView {
 
   refresh() { this._fetchAndRender(); }
 
-  _apiBase() { return this.plugin._apiBase(); }
+  _apiBase() { return this.plugin._dispatcherBase(); }
 
   async _fetchAndRender() {
     try {
-      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/tasks/active`);
+      const resp = await this.plugin._cloudFetch(this.plugin._dispatcherUrl("/api/tasks/active"));
       if (!resp.ok) return;
       const data = await resp.json();
       const json = JSON.stringify(data.tasks);
       if (json === this._lastJson) return; // no changes
+      const prevCount = this._tasks.length;
       this._lastJson = json;
       this._tasks = data.tasks || [];
+      // Task just finished — pull changes immediately
+      if (prevCount > 0 && this._tasks.length === 0) {
+        this.plugin._cloudGitSync();
+      }
     } catch { /* dispatcher offline */ }
     this._render();
   }
@@ -1858,11 +1902,11 @@ class DavyJonesReportsView extends ItemView {
 
   refresh() { this._checkForNew(); }
 
-  _apiBase() { return this.plugin._apiBase(); }
+  _apiBase() { return this.plugin._dispatcherBase(); }
 
   async _checkForNew() {
     try {
-      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports?limit=1&offset=0`);
+      const resp = await this.plugin._cloudFetch(this.plugin._dispatcherUrl("/api/reports?limit=1&offset=0"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (data.reports.length > 0 && (this._reports.length === 0 || data.reports[0].id !== this._reports[0].id)) {
@@ -1879,7 +1923,7 @@ class DavyJonesReportsView extends ItemView {
       this._expandedTasks.clear();
     }
     try {
-      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${this._offset}`);
+      const resp = await this.plugin._cloudFetch(this.plugin._dispatcherUrl(`/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${this._offset}`));
       if (!resp.ok) { this._renderReports(); return; }
       const data = await resp.json();
       this._reports = this._reports.concat(data.reports);
@@ -1892,7 +1936,7 @@ class DavyJonesReportsView extends ItemView {
   async _loadReportDetail(reportId) {
     if (this._reportCache[reportId]) return this._reportCache[reportId];
     try {
-      const resp = await this.plugin._cloudFetch(`${this._apiBase()}/api/reports/${reportId}`);
+      const resp = await this.plugin._cloudFetch(this.plugin._dispatcherUrl(`/api/reports/${reportId}`));
       if (!resp.ok) return null;
       const detail = await resp.json();
       this._reportCache[reportId] = detail;
@@ -3012,7 +3056,10 @@ class DavyJonesEventModal extends Modal {
     btn.disabled = true;
     btn.textContent = "Dispatching…";
 
-    const url = `${this.plugin._apiBase()}/api/task`;
+    const isCloud = this.plugin._isCloudMode();
+    const url = isCloud
+      ? `${this.plugin._dispatcherBase()}/tasks`
+      : `${this.plugin._apiBase()}/api/task`;
 
     try {
       const resp = await this.plugin._cloudFetch(url, {
@@ -3558,11 +3605,27 @@ class DavyJonesControlPanel extends ItemView {
           (updatedConfig, updatedInstances) => {
             // Merge config updates
             Object.assign(this._config, updatedConfig);
-            // Replace instances for this service, keep others
+            // Replace instances for this service, keep others. Auto-generate
+            // an id/label for any instance that has a token but no label so
+            // we never silently drop user input.
             const otherInstances = (this._rules.serviceInstances || []).filter(i => i.service !== service.id);
-            this._rules.serviceInstances = [...otherInstances, ...updatedInstances.filter(i => i.id && i.token)];
-            this._dirty = true;
+            const cleaned = updatedInstances
+              .filter(i => i.token)
+              .map((i, idx) => ({
+                ...i,
+                id: i.id || `${service.id}-${Date.now().toString(36)}-${idx}`,
+                label: i.label || `${service.name} ${otherInstances.filter(o => o.service === service.id).length + idx + 1}`,
+              }));
+            this._rules.serviceInstances = [...otherInstances, ...cleaned];
+            // Persist immediately — modal Save now actually saves. The
+            // "Apply & Restart" button at the bottom of the panel is no
+            // longer required for the change to take effect.
+            this.plugin._writeDavyJonesEnv(this._config);
+            this.plugin._writeVaultRules(this._rules);
+            this.plugin._applyServiceConfig();
+            this._dirty = false;
             this._render();
+            new Notice(`${service.name} configuration saved.`);
           },
         ).open();
       });
@@ -4108,7 +4171,7 @@ const SERVICE_DEFS = [
         prefix: "glpat-",
       },
       {
-        key: "GITLAB_MCP_URL",
+        key: "GITLAB_API_URL",
         label: "API URL",
         desc: "Only change for self-hosted GitLab (default: gitlab.com).",
         hint: "",
@@ -4383,7 +4446,7 @@ class DavyJonesCloudOnboardingModal extends Modal {
   }
 
   async _startOAuthFlow(btn) {
-    const CLOUD_API = "http://34-76-141-163.nip.io";
+    const CLOUD_API = "https://34-77-180-124.nip.io";
     const CALLBACK_PORT = 27420;
 
     btn.disabled = true;
@@ -4458,7 +4521,7 @@ class DavyJonesCloudOnboardingModal extends Modal {
   }
 
   async _connectVault() {
-    const CLOUD_API = "http://34-76-141-163.nip.io";
+    const CLOUD_API = "https://34-77-180-124.nip.io";
     this._connectBtn.disabled = true;
     this._connectBtn.textContent = "Connecting...";
     this._connectStatus.textContent = "";
@@ -4498,15 +4561,21 @@ class DavyJonesCloudOnboardingModal extends Modal {
       this.plugin._writeDavyJonesEnv(config);
 
       // Set up git remote for cloud sync
-      if (vault.git_url) {
+      const gitPushUrl = vault.git_push_url || vault.git_repo_url;
+      if (gitPushUrl) {
         this._connectStatus.textContent = "Setting up git sync...";
         const shell = process.env.SHELL || "/bin/bash";
         const { exec } = require("child_process");
+        // Store the push URL in config so periodic sync can use it
+        config["DAVYJONES_GIT_REMOTE"] = gitPushUrl;
         await new Promise((resolve) => {
           exec(
-            `${shell} -c 'cd "${this.plugin._vaultPath}" && git remote remove davyjones-cloud 2>/dev/null; git remote add davyjones-cloud "${vault.git_url}" && git push davyjones-cloud main --force 2>&1'`,
-            { timeout: 30000 },
-            resolve,
+            `${shell} -c 'cd "${this.plugin._vaultPath}" && git remote remove davyjones-cloud 2>/dev/null; git remote add davyjones-cloud "${gitPushUrl}" && git push davyjones-cloud main --force 2>&1'`,
+            { timeout: 60000 },
+            (err, stdout, stderr) => {
+              if (err) console.log("DavyJones git push:", stderr || err.message);
+              resolve();
+            },
           );
         });
       }

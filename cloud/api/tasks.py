@@ -136,6 +136,41 @@ async def get_reports(
         return []
 
 
+@router.get("/api/claude-changes")
+async def get_claude_changes(
+    vault_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy claude file-change notifications from the vault's dispatcher."""
+    vault = await _get_user_vault(vault_id, user, db)
+    url = _dispatcher_url(user.id, vault.slug)
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{url}/api/claude-changes")
+            resp.raise_for_status()
+            return resp.json()
+    except (httpx.ConnectError, httpx.ReadTimeout):
+        return []
+
+
+@router.post("/api/claude-changes/clear")
+async def clear_claude_changes(
+    vault_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy clear-changes call to the vault's dispatcher."""
+    vault = await _get_user_vault(vault_id, user, db)
+    url = _dispatcher_url(user.id, vault.slug)
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(f"{url}/api/claude-changes/clear")
+            return resp.json() if resp.is_success else {"status": "ok"}
+    except (httpx.ConnectError, httpx.ReadTimeout):
+        return {"status": "ok"}
+
+
 @router.get("/health")
 async def vault_health(
     vault_id: str,

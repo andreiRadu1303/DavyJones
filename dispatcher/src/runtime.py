@@ -67,13 +67,24 @@ def build_agent_env(max_turns: int, output_format: str = "json") -> dict[str, st
     # Dispatcher API URL
     env["DAVYJONES_API_URL"] = f"http://{DISPATCHER_HOSTNAME}:{HTTP_PORT}"
 
-    # MCP service URLs (project-scoped container names on shared network)
-    _prefix = f"davyjones-{VAULT_SLUG}" if VAULT_SLUG != "default" else "davyjones"
-    env["OBSIDIAN_MCP_URL"] = f"http://{_prefix}-obsidian-mcp-1:3010/mcp"
-    env["SLACK_MCP_URL"] = f"http://{_prefix}-slack-mcp-1:3001/sse"
-    env["GITLAB_MCP_URL"] = f"http://{_prefix}-gitlab-mcp-1:3002/sse"
-    env["GITHUB_MCP_URL"] = f"http://{_prefix}-github-mcp-1:3003/sse"
-    env["DAVYJONES_MCP_URL"] = f"http://{_prefix}-davyjones-mcp-1:3004/sse"
+    # MCP service URLs — different naming in K8s vs Docker Compose
+    from src.config import RUNTIME_BACKEND, K8S_NAMESPACE
+    if RUNTIME_BACKEND == "k8s":
+        # K8s: services are named obsidian-mcp-{slug}.{namespace}
+        _ns = K8S_NAMESPACE
+        env["OBSIDIAN_MCP_URL"] = f"http://obsidian-mcp-{VAULT_SLUG}.{_ns}:3010/mcp"
+        env["SLACK_MCP_URL"] = f"http://slack-mcp-{VAULT_SLUG}.{_ns}:3001/sse"
+        env["GITLAB_MCP_URL"] = f"http://gitlab-mcp-{VAULT_SLUG}.{_ns}:3002/sse"
+        env["GITHUB_MCP_URL"] = f"http://github-mcp-{VAULT_SLUG}.{_ns}:3003/sse"
+        env["DAVYJONES_MCP_URL"] = f"http://davyjones-mcp-{VAULT_SLUG}.{_ns}:3004/sse"
+    else:
+        # Docker Compose: project-scoped container names
+        _prefix = f"davyjones-{VAULT_SLUG}" if VAULT_SLUG != "default" else "davyjones"
+        env["OBSIDIAN_MCP_URL"] = f"http://{_prefix}-obsidian-mcp-1:3010/mcp"
+        env["SLACK_MCP_URL"] = f"http://{_prefix}-slack-mcp-1:3001/sse"
+        env["GITLAB_MCP_URL"] = f"http://{_prefix}-gitlab-mcp-1:3002/sse"
+        env["GITHUB_MCP_URL"] = f"http://{_prefix}-github-mcp-1:3003/sse"
+        env["DAVYJONES_MCP_URL"] = f"http://{_prefix}-davyjones-mcp-1:3004/sse"
 
     return env
 

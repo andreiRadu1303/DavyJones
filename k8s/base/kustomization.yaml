@@ -8,6 +8,6 @@ resources:
   - forgejo.yaml
   - central-api.yaml
   - rbac.yaml
-  - ingress.yaml
+  - caddy.yaml
   # vault-template.yaml and keda-scaler-template.yaml are NOT applied directly —
   # they are templates instantiated by the Central API per user/vault.

@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-from src.config import K8S_AGENT_IMAGE, K8S_NAMESPACE
+from src.config import K8S_AGENT_IMAGE, K8S_NAMESPACE, VAULT_SLUG
 from src.runtime import ContainerRuntime
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ class K8sJobRuntime(ContainerRuntime):
                                 client.V1Volume(
                                     name="vault",
                                     persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
-                                        claim_name="vault-data",
+                                        claim_name=f"vault-{VAULT_SLUG}",
                                     ),
                                 ),
                                 client.V1Volume(

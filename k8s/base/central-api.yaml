@@ -13,6 +13,7 @@ spec:
       labels:
         app: central-api
     spec:
+      serviceAccountName: central-api
       containers:
       - name: api
         image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/cloud-api:latest
@@ -66,7 +67,7 @@ data:
   DAVYJONES_REDIS_URL: "redis://redis.davyjones-system:6379/0"
   DAVYJONES_FORGEJO_URL: "http://forgejo.davyjones-system:3000"
   DAVYJONES_K8S_NAMESPACE_PREFIX: "dj-"
-  DAVYJONES_API_URL: "https://api.davyjones.cloud"
+  DAVYJONES_API_URL: "https://34-77-180-124.nip.io"
 ---
 apiVersion: v1
 kind: Secret

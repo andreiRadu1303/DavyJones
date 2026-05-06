@@ -53,6 +53,23 @@ stringData:
   SLACK_APP_TOKEN: "${SLACK_APP_TOKEN}"
 
 ---
+# Per-vault config (rules JSON + non-secret env overrides like GITLAB_API_URL).
+# Cloud API patches this on every save; mounted into dispatcher and into MCP
+# Deployments that need overrides. Mounted ConfigMap files live-update without
+# pod restart, so most config changes propagate without a rollout.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    vault: ${VAULT_SLUG}
+data:
+  rules.json: "{}"
+  GITLAB_API_URL: "https://gitlab.com"
+
+---
 # Dispatcher deployment (1 per vault)
 apiVersion: apps/v1
 kind: Deployment
@@ -65,6 +82,12 @@ metadata:
     vault: ${VAULT_SLUG}
 spec:
   replicas: ${REPLICAS}  # 0 for free (cold start), 1 for pro (warm)
+  # ReadWriteOnce PVCs can only mount one pod at a time — RollingUpdate would
+  # deadlock waiting for the old pod to release the volume. Recreate kills the
+  # old pod first, briefly leaving 0 replicas; tasks/proxy hits during this
+  # window get a 503 ("Dispatcher not running"), already handled by the API.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: davyjones
@@ -88,9 +111,12 @@ spec:
         - |
           if [ -d /vault/.git ]; then
             cd /vault && git pull --rebase origin main || true
+          elif [ -z "$(ls -A /vault 2>/dev/null)" ]; then
+            git clone ${GIT_REPO_URL} /vault || true
           else
-            git clone ${GIT_REPO_URL} /vault
+            cd /vault && git init && git remote add origin ${GIT_REPO_URL} && git fetch && git checkout -b main origin/main || true
           fi
+          chown -R 501:20 /vault 2>/dev/null || true
         volumeMounts:
         - name: vault
           mountPath: /vault
@@ -128,6 +154,9 @@ spec:
           mountPath: /vault
         - name: state
           mountPath: /app/state
+        - name: vault-config
+          mountPath: /vault-config
+          readOnly: true
         resources:
           requests:
             cpu: 100m
@@ -142,6 +171,9 @@ spec:
       - name: state
         persistentVolumeClaim:
           claimName: state-${VAULT_SLUG}
+      - name: vault-config
+        configMap:
+          name: vault-config-${VAULT_SLUG}
 
 ---
 # Dispatcher service (internal, Central API proxies to this)
@@ -217,6 +249,251 @@ spec:
     vault: ${VAULT_SLUG}
   ports:
   - port: 3010
+
+---
+# DavyJones MCP (vault file ops + memory)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: davyjones-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: davyjones-mcp
+    vault: ${VAULT_SLUG}
+spec:
+  replicas: ${REPLICAS}
+  selector:
+    matchLabels:
+      app: davyjones
+      component: davyjones-mcp
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: davyjones-mcp
+        vault: ${VAULT_SLUG}
+    spec:
+      containers:
+      - name: davyjones-mcp
+        image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/davyjones-mcp:latest
+        ports:
+        - containerPort: 3004
+        env:
+        - name: VAULT_PATH
+          value: /vault
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+      volumes:
+      - name: vault
+        persistentVolumeClaim:
+          claimName: vault-${VAULT_SLUG}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: davyjones-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: davyjones-mcp
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 3004
+
+---
+# GitLab MCP (public image; supports custom GITLAB_API_URL for self-hosted)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: gitlab-mcp
+    vault: ${VAULT_SLUG}
+spec:
+  # Token-dependent MCPs default to 0; cloud scales to 1 once a token is set.
+  # Otherwise the container crash-loops on "TOKEN not set".
+  replicas: 0
+  selector:
+    matchLabels:
+      app: davyjones
+      component: gitlab-mcp
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: gitlab-mcp
+        vault: ${VAULT_SLUG}
+    spec:
+      containers:
+      - name: gitlab-mcp
+        image: zereight050/gitlab-mcp:latest
+        ports:
+        - containerPort: 3002
+        env:
+        - name: GITLAB_PERSONAL_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-credentials-${VAULT_SLUG}
+              key: GITLAB_TOKEN
+        - name: GITLAB_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: vault-config-${VAULT_SLUG}
+              key: GITLAB_API_URL
+        - name: SSE
+          value: "true"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "3002"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: gitlab-mcp
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 3002
+
+---
+# GitHub MCP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: github-mcp
+    vault: ${VAULT_SLUG}
+spec:
+  replicas: 0  # cloud scales to 1 once GITHUB_TOKEN is set
+  selector:
+    matchLabels:
+      app: davyjones
+      component: github-mcp
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: github-mcp
+        vault: ${VAULT_SLUG}
+    spec:
+      containers:
+      - name: github-mcp
+        image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/github-mcp:latest
+        ports:
+        - containerPort: 3003
+        env:
+        - name: GITHUB_PERSONAL_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-credentials-${VAULT_SLUG}
+              key: GITHUB_TOKEN
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: github-mcp
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 3003
+
+---
+# Slack MCP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+  labels:
+    app: davyjones
+    component: slack-mcp
+    vault: ${VAULT_SLUG}
+spec:
+  replicas: 0  # cloud scales to 1 once SLACK_BOT_TOKEN is set
+  selector:
+    matchLabels:
+      app: davyjones
+      component: slack-mcp
+      vault: ${VAULT_SLUG}
+  template:
+    metadata:
+      labels:
+        app: davyjones
+        component: slack-mcp
+        vault: ${VAULT_SLUG}
+    spec:
+      containers:
+      - name: slack-mcp
+        image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/slack-mcp:latest
+        ports:
+        - containerPort: 3001
+        env:
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-credentials-${VAULT_SLUG}
+              key: SLACK_BOT_TOKEN
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-mcp-${VAULT_SLUG}
+  namespace: dj-${USER_ID}
+spec:
+  selector:
+    app: davyjones
+    component: slack-mcp
+    vault: ${VAULT_SLUG}
+  ports:
+  - port: 3001
 
 ---
 # Resource quota per user namespace

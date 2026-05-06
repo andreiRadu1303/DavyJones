@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 VAULT_RULES_FILE = os.path.join(VAULT_PATH, ".davyjones-rules.json")
 VAULT_ENV_FILE = os.path.join(VAULT_PATH, ".davyjones.env")
 
+# In cloud mode the cloud API patches a per-vault ConfigMap mounted here.
+# Mounted ConfigMap files refresh in-pod within ~1 minute when the underlying
+# resource is patched, so changes propagate without a pod restart.
+CONFIGMAP_RULES_FILE = "/vault-config/rules.json"
+
 _DEFAULT_RULES = {
     "customInstructions": "",
     "verbosity": "normal",
@@ -32,27 +37,38 @@ _DEFAULT_RULES = {
 }
 
 
+def _read_rules_json() -> dict | None:
+    """Try the cloud-mounted ConfigMap first, then the in-vault file."""
+    for path in (CONFIGMAP_RULES_FILE, VAULT_RULES_FILE):
+        try:
+            with open(path, "r") as f:
+                rules = json.load(f)
+            if isinstance(rules, dict) and rules:
+                return rules
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def load_vault_rules() -> dict:
     """Load vault rules, returning defaults for missing fields."""
-    try:
-        with open(VAULT_RULES_FILE, "r") as f:
-            rules = json.load(f)
-        merged = {**_DEFAULT_RULES, **rules}
-        merged["allowedOperations"] = {
-            **_DEFAULT_RULES["allowedOperations"],
-            **rules.get("allowedOperations", {}),
-        }
-        merged["secrets"] = {
-            **_DEFAULT_RULES["secrets"],
-            **rules.get("secrets", {}),
-        }
-        # serviceInstances is a list — use file version or default
-        merged["serviceInstances"] = rules.get(
-            "serviceInstances", list(_DEFAULT_RULES["serviceInstances"])
-        )
-        return merged
-    except (FileNotFoundError, json.JSONDecodeError):
+    rules = _read_rules_json()
+    if rules is None:
         return dict(_DEFAULT_RULES)
+    merged = {**_DEFAULT_RULES, **rules}
+    merged["allowedOperations"] = {
+        **_DEFAULT_RULES["allowedOperations"],
+        **rules.get("allowedOperations", {}),
+    }
+    merged["secrets"] = {
+        **_DEFAULT_RULES["secrets"],
+        **rules.get("secrets", {}),
+    }
+    # serviceInstances is a list — use file version or default
+    merged["serviceInstances"] = rules.get(
+        "serviceInstances", list(_DEFAULT_RULES["serviceInstances"])
+    )
+    return merged
 
 
 def load_vault_env() -> dict[str, str]:

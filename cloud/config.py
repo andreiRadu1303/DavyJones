@@ -29,13 +29,19 @@ class Settings(BaseSettings):
 
     # Forgejo (hosted git)
     forgejo_url: str = "http://forgejo.davyjones-system:3000"
+    forgejo_external_url: str = ""  # External URL for plugin git push (e.g. http://35.x.x.x:3000)
     forgejo_admin_token: str = ""
+    forgejo_admin_user: str = "davyjones-admin"
 
     # Kubernetes
     k8s_namespace_prefix: str = "dj-"
+    k8s_vault_template_path: str = "/app/k8s/vault-template.yaml"
+    k8s_agent_image: str = "europe-west1-docker.pkg.dev/central-surf-270818/davyjones/agent:latest"
+    k8s_dispatcher_image: str = "europe-west1-docker.pkg.dev/central-surf-270818/davyjones/dispatcher:latest"
+    k8s_mcp_image: str = "europe-west1-docker.pkg.dev/central-surf-270818/davyjones/obsidian-mcp:latest"
 
     # App
-    api_url: str = "https://api.davyjones.cloud"
+    api_url: str = "https://34-77-180-124.nip.io"
     cors_origins: list[str] = ["*"]
 
     class Config:
