@@ -592,13 +592,24 @@ class DavyJonesPlugin extends Plugin {
   }
 
   _getGwsStatus() {
+    // Cloud mode: return a cached value populated by _refreshGwsStatusCloud().
+    // The control panel re-renders when the cache updates.
+    if (this._isCloudMode()) {
+      // Kick off a refresh if we don't have a recent one
+      const now = Date.now();
+      if (!this._gwsStatusCacheTs || now - this._gwsStatusCacheTs > 30000) {
+        this._refreshGwsStatusCloud();
+      }
+      return this._gwsStatusCache || { connected: false, error: "loading" };
+    }
+
+    // Local mode: query the gws CLI directly
     try {
       const raw = execSync("gws auth status 2>/dev/null", {
         timeout: 5000,
         encoding: "utf8",
         env: { ...process.env, PATH: this._shellPath() },
       }).trim();
-      // gws auth status may print "Using keyring backend: ..." before JSON
       const jsonStart = raw.indexOf("{");
       if (jsonStart < 0) return { connected: false, error: "no JSON in output" };
       const data = JSON.parse(raw.slice(jsonStart));
@@ -632,6 +643,36 @@ class DavyJonesPlugin extends Plugin {
         return { connected: false, error: "gws CLI not installed" };
       }
       return { connected: false, error: "auth check failed" };
+    }
+  }
+
+  async _refreshGwsStatusCloud() {
+    const env = this._readDavyJonesEnv();
+    const vaultId = env.DAVYJONES_VAULT_ID;
+    if (!vaultId) {
+      this._gwsStatusCache = { connected: false, error: "no vault registered" };
+      this._gwsStatusCacheTs = Date.now();
+      return;
+    }
+    try {
+      const resp = await this._cloudFetch(
+        `${env.DAVYJONES_CLOUD_API}/api/v1/vaults/${vaultId}/gws/status`,
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        this._gwsStatusCache = data.connected
+          ? { connected: true, user: data.email || "", scopes: [] }
+          : { connected: false, error: "not connected" };
+      } else {
+        this._gwsStatusCache = { connected: false, error: "status check failed" };
+      }
+    } catch {
+      this._gwsStatusCache = { connected: false, error: "status check failed" };
+    }
+    this._gwsStatusCacheTs = Date.now();
+    // Re-render any open control panels so the user sees the updated status
+    for (const leaf of this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE)) {
+      if (leaf.view && leaf.view._render) leaf.view._render();
     }
   }
 
@@ -3307,202 +3348,269 @@ class DavyJonesICSImportModal extends Modal {
   }
 }
 
-// ─── GWS Auth Modal ───────────────────────────────────────────
+// ─── GWS Auth Modal (cloud BYOC flow) ─────────────────────────
+// Each user creates their own OAuth client in their own GCP project,
+// pastes Client ID + Secret here, and the cloud handles the OAuth dance
+// using their credentials. Sidesteps Google verification entirely —
+// each user is the developer of their own app accessing their own data.
 
 class DavyJonesGwsAuthModal extends Modal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
-    this._proc = null;
-    this._running = false;
-  }
-
-  _clientSecretPath() {
-    const os = require("os");
-    return path.join(os.homedir(), ".config", "gws", "client_secret.json");
-  }
-
-  _hasClientSecret() {
-    try { fs.accessSync(this._clientSecretPath()); return true; } catch { return false; }
-  }
-
-  _readClientSecretProjectId() {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this._clientSecretPath(), "utf8"));
-      return (raw.installed && raw.installed.project_id) || (raw.web && raw.web.project_id) || null;
-    } catch { return null; }
+    this._pollTimer = null;
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("davyjones-gws-auth-modal");
-    contentEl.createEl("h2", { text: "Google Workspace Authentication" });
+    contentEl.createEl("h2", { text: "Connect Google Workspace" });
     this._bodyEl = contentEl.createDiv();
-    this._renderSetupStep();
+
+    if (!this.plugin._isCloudMode()) {
+      this._renderLocalModeNotice();
+    } else {
+      this._renderSetupStep();
+    }
   }
 
   onClose() {
-    this._killProc();
+    if (this._pollTimer) clearInterval(this._pollTimer);
     this.contentEl.empty();
   }
 
-  // ── Step 1: Check for client_secret.json ──────────────────
-
-  _renderSetupStep() {
+  // ── Local-mode users: tell them to use the CLI directly ──
+  _renderLocalModeNotice() {
     const el = this._bodyEl;
     el.empty();
-
-    const hasSecret = this._hasClientSecret();
-
-    const hint = el.createEl("p", { cls: "davyjones-gws-auth-hint" });
-    hint.setText(
-      "Before authenticating, you need an OAuth client_secret.json from the Google Cloud Console."
-    );
-
-    const steps = el.createEl("ol", { cls: "davyjones-gws-auth-steps" });
-    const li1 = steps.createEl("li");
-    li1.appendText("Go to ");
-    li1.createEl("a", {
-      text: "Google Cloud Console → Credentials",
-      href: "https://console.cloud.google.com/apis/credentials",
-      attr: { target: "_blank" },
+    el.createEl("p", {
+      cls: "davyjones-gws-auth-hint",
+      text: "You're in local mode. Run `gws auth login` from your terminal — the agent picks up credentials from ~/.config/gws/ automatically.",
     });
-    steps.createEl("li", { text: 'Click "Create Credentials" → "OAuth client ID" → Application type: Desktop app' });
-    steps.createEl("li", { text: 'Download the client_secret_*.json file from the dialog' });
-    const li4 = steps.createEl("li");
-    li4.appendText("Save it to: ");
-    li4.createEl("code", { text: this._clientSecretPath() });
-
-    const statusEl = el.createDiv({ cls: "davyjones-gws-auth-file-status" });
-    if (hasSecret) {
-      statusEl.createEl("span", { cls: "davyjones-gws-auth-found", text: "✓ client_secret.json found" });
-    } else {
-      statusEl.createEl("span", { cls: "davyjones-gws-auth-missing", text: "✗ client_secret.json not found" });
-    }
-
     const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
-    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
-    cancelBtn.addEventListener("click", () => this.close());
-
-    if (!hasSecret) {
-      const recheckBtn = btnRow.createEl("button", { text: "Check Again" });
-      recheckBtn.addEventListener("click", () => this._renderSetupStep());
-    }
-
-    const continueBtn = btnRow.createEl("button", { cls: "mod-cta", text: hasSecret ? "Continue" : "Continue Anyway" });
-    continueBtn.addEventListener("click", () => this._renderAuthStep());
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.addEventListener("click", () => this.close());
   }
 
-  // ── Step 2: Run gws auth setup, then login ────────────────
-
-  _renderAuthStep() {
+  // ── Step 1: GCP setup instructions + paste Client ID/Secret ──
+  _renderSetupStep() {
     const el = this._bodyEl;
     el.empty();
 
     el.createEl("p", {
       cls: "davyjones-gws-auth-hint",
-      text: "Running gws auth login. A browser window will open for Google OAuth — complete the sign-in there.",
+      text: "DavyJones never sees your Google Workspace data. You'll create a small OAuth app in your own Google Cloud project; the agent uses your app's credentials to access your own Gmail, Drive, and Calendar.",
     });
 
-    this._outputEl = el.createEl("pre", { cls: "davyjones-live-output davyjones-gws-auth-output" });
-    this._outputRaw = "";
+    const stepsHeading = el.createEl("h4", { text: "One-time GCP setup" });
+    stepsHeading.style.marginTop = "16px";
+
+    const steps = el.createEl("ol", { cls: "davyjones-gws-auth-steps" });
+    const li1 = steps.createEl("li");
+    li1.appendText("Open ");
+    li1.createEl("a", {
+      text: "Google Cloud Console",
+      href: "https://console.cloud.google.com/",
+      attr: { target: "_blank" },
+    });
+    li1.appendText(" and create a new project (or pick an existing one).");
+
+    const li2 = steps.createEl("li");
+    li2.appendText("Enable the APIs you need: ");
+    li2.createEl("a", { text: "Gmail", href: "https://console.cloud.google.com/apis/library/gmail.googleapis.com", attr: { target: "_blank" } });
+    li2.appendText(", ");
+    li2.createEl("a", { text: "Drive", href: "https://console.cloud.google.com/apis/library/drive.googleapis.com", attr: { target: "_blank" } });
+    li2.appendText(", ");
+    li2.createEl("a", { text: "Calendar", href: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com", attr: { target: "_blank" } });
+    li2.appendText(", ");
+    li2.createEl("a", { text: "Sheets", href: "https://console.cloud.google.com/apis/library/sheets.googleapis.com", attr: { target: "_blank" } });
+    li2.appendText(", ");
+    li2.createEl("a", { text: "Docs", href: "https://console.cloud.google.com/apis/library/docs.googleapis.com", attr: { target: "_blank" } });
+    li2.appendText(".");
+
+    const li3 = steps.createEl("li");
+    li3.appendText("On the ");
+    li3.createEl("a", { text: "OAuth consent screen", href: "https://console.cloud.google.com/apis/credentials/consent", attr: { target: "_blank" } });
+    li3.appendText(", choose ");
+    li3.createEl("strong", { text: "External" });
+    li3.appendText(" + ");
+    li3.createEl("strong", { text: "Testing" });
+    li3.appendText(", add yourself as a test user, and add the scopes you want (gmail.readonly, gmail.send, drive.file, calendar, spreadsheets, documents).");
+
+    const li4 = steps.createEl("li");
+    li4.appendText("Under ");
+    li4.createEl("a", { text: "Credentials", href: "https://console.cloud.google.com/apis/credentials", attr: { target: "_blank" } });
+    li4.appendText(", create an ");
+    li4.createEl("strong", { text: "OAuth 2.0 Client ID" });
+    li4.appendText(" — Application type: ");
+    li4.createEl("strong", { text: "Web application" });
+    li4.appendText(".");
+
+    const li5 = steps.createEl("li");
+    li5.appendText("Add this exact ");
+    li5.createEl("strong", { text: "Authorized redirect URI" });
+    li5.appendText(":");
+    const redirectUri = `${this._cloudApi()}/api/v1/auth/gws/callback`;
+    const redirectBox = li5.createEl("div", { cls: "davyjones-gws-redirect-box" });
+    redirectBox.createEl("code", { text: redirectUri });
+    const copyBtn = redirectBox.createEl("button", { text: "Copy" });
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(redirectUri);
+      copyBtn.setText("Copied!");
+      setTimeout(() => copyBtn.setText("Copy"), 1500);
+    });
+
+    steps.createEl("li", { text: "Copy the Client ID and Client Secret it generates and paste them below." });
+
+    // ── Form ──
+    const formHeading = el.createEl("h4", { text: "Your OAuth client" });
+    formHeading.style.marginTop = "20px";
+
+    const form = el.createDiv({ cls: "davyjones-gws-auth-form" });
+
+    const cidLabel = form.createEl("label", { text: "Client ID" });
+    cidLabel.style.display = "block";
+    cidLabel.style.marginTop = "8px";
+    this._clientIdInput = form.createEl("input", {
+      type: "text",
+      placeholder: "1234567890-abc...apps.googleusercontent.com",
+      cls: "davyjones-gws-auth-input",
+    });
+
+    const csLabel = form.createEl("label", { text: "Client Secret" });
+    csLabel.style.display = "block";
+    csLabel.style.marginTop = "12px";
+    this._clientSecretInput = form.createEl("input", {
+      type: "password",
+      placeholder: "GOCSPX-...",
+      cls: "davyjones-gws-auth-input",
+    });
+
+    this._statusEl = el.createDiv({ cls: "davyjones-gws-auth-status" });
 
     const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
-    this._cancelBtn = btnRow.createEl("button", { text: "Cancel" });
-    this._cancelBtn.addEventListener("click", () => {
-      this._killProc();
-      this.close();
-    });
-    this._closeBtn = btnRow.createEl("button", { text: "Close" });
-    this._closeBtn.style.display = "none";
-    this._closeBtn.addEventListener("click", () => this.close());
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
 
-    this._appendOutput("Running gws auth login ...\n");
+    this._connectBtn = btnRow.createEl("button", { cls: "mod-cta", text: "Connect" });
+    this._connectBtn.addEventListener("click", () => this._submit());
+  }
 
-    this._runSpawn("gws auth login", (code) => {
-      if (code === 0) {
-        this._appendOutput("\nAuth login succeeded. Exporting credentials...\n");
-        this._exportCredentials();
-      } else {
-        this._appendOutput(`\nAuth login failed (exit code ${code}).\n`);
-        this._showDone(false);
+  _cloudApi() {
+    return this.plugin._readDavyJonesEnv().DAVYJONES_CLOUD_API || "";
+  }
+
+  async _submit() {
+    const clientId = this._clientIdInput.value.trim();
+    const clientSecret = this._clientSecretInput.value.trim();
+    if (!clientId || !clientSecret) {
+      this._statusEl.setText("Both Client ID and Client Secret are required.");
+      this._statusEl.className = "davyjones-gws-auth-status davyjones-gws-auth-status-error";
+      return;
+    }
+
+    this._connectBtn.disabled = true;
+    this._connectBtn.setText("Submitting...");
+    this._statusEl.setText("");
+
+    const env = this.plugin._readDavyJonesEnv();
+    const vaultId = env.DAVYJONES_VAULT_ID;
+    if (!vaultId) {
+      this._statusEl.setText("No vault registered yet — finish onboarding first.");
+      this._statusEl.className = "davyjones-gws-auth-status davyjones-gws-auth-status-error";
+      this._connectBtn.disabled = false;
+      this._connectBtn.setText("Connect");
+      return;
+    }
+
+    try {
+      const resp = await this.plugin._cloudFetch(
+        `${this._cloudApi()}/api/v1/vaults/${vaultId}/gws/setup`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+        },
+      );
+      if (!resp.ok) {
+        throw new Error((await resp.text()) || resp.statusText);
       }
-    });
-  }
-
-  // ── Helpers ────────────────────────────────────────────────
-
-  _appendOutput(text) {
-    this._outputRaw += text;
-    // Escape HTML, then linkify URLs
-    const escaped = this._outputRaw
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/(https?:\/\/[^\s<>"')\]]+)/g, '<a href="$1" target="_blank">$1</a>');
-    this._outputEl.innerHTML = escaped;
-    this._outputEl.scrollTop = this._outputEl.scrollHeight;
-  }
-
-  _killProc() {
-    if (this._proc && this._running) {
-      try { this._proc.kill(); } catch { /* already dead */ }
-      this._running = false;
+      const { authorize_url } = await resp.json();
+      require("electron").shell.openExternal(authorize_url);
+      this._renderWaitingStep();
+    } catch (e) {
+      this._statusEl.setText(`Failed: ${e.message}`);
+      this._statusEl.className = "davyjones-gws-auth-status davyjones-gws-auth-status-error";
+      this._connectBtn.disabled = false;
+      this._connectBtn.setText("Connect");
     }
   }
 
-  _runSpawn(cmd, onDone) {
-    const shell = process.env.SHELL || "/bin/sh";
-    this._running = true;
-    this._proc = spawn(shell, ["-lc", cmd], {
-      env: { ...process.env, PATH: this.plugin._shellPath() },
+  // ── Step 2: poll until the cloud reports a stored refresh token ──
+  _renderWaitingStep() {
+    const el = this._bodyEl;
+    el.empty();
+    el.createEl("p", {
+      cls: "davyjones-gws-auth-hint",
+      text: "A Google sign-in tab just opened in your browser. Complete the consent screen there — click 'Continue' through any 'unverified app' warning (your test app is allowed because you're a test user on it).",
     });
+    const status = el.createDiv({ cls: "davyjones-gws-auth-status davyjones-gws-auth-status-pending" });
+    status.setText("Waiting for authorization...");
 
-    this._proc.stdout.on("data", (data) => this._appendOutput(data.toString()));
-    this._proc.stderr.on("data", (data) => this._appendOutput(data.toString()));
+    const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
 
-    this._proc.on("close", (code) => {
-      this._running = false;
-      onDone(code);
-    });
-
-    this._proc.on("error", (err) => {
-      this._running = false;
-      this._appendOutput(`\nFailed to start process: ${err.message}\n`);
-      this._showDone(false);
-    });
-  }
-
-  _exportCredentials() {
-    exec("gws auth export > ~/.config/gws/credentials.json", {
-      timeout: 15000,
-      env: { ...process.env, PATH: this.plugin._shellPath() },
-    }, (err, stdout, stderr) => {
-      if (err) {
-        this._appendOutput(`\nCredential export failed: ${stderr || err.message}\n`);
-        this._showDone(false);
-      } else {
-        this._appendOutput("\n✅ Google auth complete. Credentials saved.\n");
-        this._showDone(true);
+    const env = this.plugin._readDavyJonesEnv();
+    const vaultId = env.DAVYJONES_VAULT_ID;
+    let polls = 0;
+    this._pollTimer = setInterval(async () => {
+      polls++;
+      try {
+        const resp = await this.plugin._cloudFetch(
+          `${this._cloudApi()}/api/v1/vaults/${vaultId}/gws/status`,
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.connected) {
+            clearInterval(this._pollTimer);
+            this._renderDone(true, data.email);
+            return;
+          }
+        }
+      } catch { /* keep polling */ }
+      if (polls >= 60) {  // 3 min total
+        clearInterval(this._pollTimer);
+        status.setText("Timed out waiting for authorization. Try again.");
+        status.className = "davyjones-gws-auth-status davyjones-gws-auth-status-error";
       }
-    });
+    }, 3000);
   }
 
-  _showDone(success) {
-    this._cancelBtn.style.display = "none";
-    this._closeBtn.style.display = "";
+  // ── Step 3: success ──
+  _renderDone(success, email) {
+    const el = this._bodyEl;
+    el.empty();
     if (success) {
-      // Auto-save GWS_CONFIG_PATH so the dispatcher can mount credentials immediately
+      const status = el.createDiv({ cls: "davyjones-gws-auth-status davyjones-gws-auth-status-ok" });
+      status.setText(`✓ Connected${email ? ` as ${email}` : ""}.`);
+      el.createEl("p", {
+        cls: "davyjones-gws-auth-hint",
+        text: "Agents on this vault can now reach your Gmail, Drive, and Calendar via the gws CLI.",
+      });
+      // Mark GWS as enabled in the local env so the control panel reflects it
       const config = this.plugin._readDavyJonesEnv();
-      if (!config.GWS_CONFIG_PATH) {
-        const os = require("os");
-        config.GWS_CONFIG_PATH = path.join(os.homedir(), ".config", "gws");
-      }
-      config.GOOGLE_WORKSPACE_ENABLED = config.GOOGLE_WORKSPACE_ENABLED || "true";
+      config.GOOGLE_WORKSPACE_ENABLED = "true";
       this.plugin._writeDavyJonesEnv(config);
-
+    }
+    const btnRow = el.createDiv({ cls: "davyjones-gws-auth-buttons" });
+    const closeBtn = btnRow.createEl("button", { cls: "mod-cta", text: "Done" });
+    closeBtn.addEventListener("click", () => {
+      this.close();
       for (const leaf of this.app.workspace.getLeavesOfType(CONTROL_VIEW_TYPE)) {
         if (leaf.view && leaf.view._render) leaf.view._render();
       }
-    }
+    });
   }
 }
 
@@ -3687,6 +3795,8 @@ class DavyJonesControlPanel extends ItemView {
       text: "Refresh Status",
     });
     refreshBtn.addEventListener("click", () => {
+      // Invalidate cache so the next render fetches fresh
+      this.plugin._gwsStatusCacheTs = 0;
       this._render();
     });
 

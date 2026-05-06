@@ -107,6 +107,15 @@ class K8sJobRuntime(ContainerRuntime):
                                             mount_path="/tmp/task-prompt.txt",
                                             sub_path="prompt.txt",
                                         ),
+                                        # GWS credentials (only present when
+                                        # the user has completed BYOC setup;
+                                        # the Secret key is optional and the
+                                        # mount silently skips if missing).
+                                        client.V1VolumeMount(
+                                            name="gws-config",
+                                            mount_path="/home/agent/.config/gws",
+                                            read_only=True,
+                                        ),
                                     ],
                                 ),
                             ],
@@ -121,6 +130,20 @@ class K8sJobRuntime(ContainerRuntime):
                                     name="prompt",
                                     config_map=client.V1ConfigMapVolumeSource(
                                         name=configmap_name,
+                                    ),
+                                ),
+                                # Project the GWS_CREDENTIALS_JSON Secret key
+                                # to a file at /home/agent/.config/gws/credentials.json
+                                # which the agent's gws CLI auto-discovers.
+                                client.V1Volume(
+                                    name="gws-config",
+                                    secret=client.V1SecretVolumeSource(
+                                        secret_name=f"vault-credentials-{VAULT_SLUG}",
+                                        items=[client.V1KeyToPath(
+                                            key="GWS_CREDENTIALS_JSON",
+                                            path="credentials.json",
+                                        )],
+                                        optional=True,
                                     ),
                                 ),
                             ],

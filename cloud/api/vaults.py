@@ -140,25 +140,39 @@ async def create_vault(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new vault, provision git repo, and spin up K8s dispatcher."""
-    # Check vault limit based on subscription
-    result = await db.execute(select(Vault).where(Vault.user_id == user.id))
-    existing = result.scalars().all()
+    # Vault-count enforcement disabled (pre-monetization). See cloud/api/limits.py.
+    # We still look up the plan so the K8s provisioner can size resource
+    # quotas appropriately for actually-paid users.
     from cloud.models.subscription import Subscription
     sub_result = await db.execute(select(Subscription).where(Subscription.user_id == user.id))
     sub = sub_result.scalar_one_or_none()
-    plan = sub.plan if sub else "free"
-    limits = {"free": 1, "pro": 5, "team": 20}
-    if len(existing) >= limits.get(plan, 1):
-        raise HTTPException(status_code=403, detail=f"Vault limit reached for {plan} plan")
+    plan = sub.plan if (sub and sub.status == "active") else "free"
 
     slug = _slugify(body.slug or body.name)
 
-    # Check slug uniqueness for this user
+    # Idempotent: if this user already has a vault with this slug, return it.
+    # Also re-run K8s provisioning — the original create_task may have failed
+    # mid-way (e.g. earlier NameError), leaving DB state without K8s
+    # resources. provision_vault uses create_from_dict which is idempotent
+    # on AlreadyExists, so re-running is safe and self-heals partial state.
     dup = await db.execute(
         select(Vault).where(Vault.user_id == user.id, Vault.slug == slug)
     )
-    if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail=f"Vault '{slug}' already exists")
+    existing = dup.scalar_one_or_none()
+    if existing:
+        from cloud.models.subscription import Subscription
+        sub_result = await db.execute(select(Subscription).where(Subscription.user_id == user.id))
+        sub = sub_result.scalar_one_or_none()
+        plan_for_provision = sub.plan if (sub and sub.status == "active") else "free"
+        asyncio.create_task(_provision_k8s(
+            user_id=user.id,
+            vault_id=existing.id,
+            vault_slug=existing.slug,
+            git_repo_url=existing.git_repo_url,
+            claude_token=body.claude_token or "",
+            plan=plan_for_provision,
+        ))
+        return _build_vault_response(existing)
 
     # Provision git repo on Forgejo
     git_url = await _provision_git_repo(user.id, slug)
@@ -251,11 +265,22 @@ async def activate_vault(
 
         namespace = f"{settings.k8s_namespace_prefix}{user.id[:8]}"
         apps = k8s_client.AppsV1Api()
-        apps.patch_namespaced_deployment_scale(
-            name=f"dispatcher-{vault.slug}",
-            namespace=namespace,
-            body={"spec": {"replicas": 1}},
-        )
+        # Wake the dispatcher and the always-needed MCPs (obsidian for vault
+        # access, davyjones for memory/file ops). Token-dependent MCPs
+        # (gitlab/github/slack) stay at 0 until tokens are configured.
+        for dep in (
+            f"dispatcher-{vault.slug}",
+            f"obsidian-mcp-{vault.slug}",
+            f"davyjones-mcp-{vault.slug}",
+        ):
+            try:
+                apps.patch_namespaced_deployment_scale(
+                    name=dep,
+                    namespace=namespace,
+                    body={"spec": {"replicas": 1}},
+                )
+            except Exception as e:
+                logger.warning(f"Could not scale {dep}: {e}")
         return {"status": "activating", "vault": vault.slug}
     except Exception as e:
         logger.warning(f"Could not scale dispatcher: {e}")
@@ -389,6 +414,178 @@ async def update_vault_config(
                 logger.info(f"Dispatcher reconcile poke skipped: {e}")
     except Exception as e:
         logger.warning(f"Could not update K8s state: {e}")
+
+    return {"status": "ok"}
+
+
+# ── Google Workspace BYOC OAuth flow ──────────────────────────────
+# The user supplies their own OAuth client credentials (created in their
+# own GCP project, kept in test mode with themselves as the only test user).
+# This sidesteps Google's verification process — each user is technically
+# the developer of their own app, accessing only their own data.
+
+DEFAULT_GWS_SCOPES = [
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/documents",
+]
+
+
+class GwsSetup(BaseModel):
+    client_id: str
+    client_secret: str
+    scopes: list[str] | None = None
+
+
+@router.post("/{vault_id}/gws/setup")
+async def gws_setup(
+    vault_id: str,
+    body: GwsSetup,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 1 of GWS OAuth: store the user's OAuth client creds and return
+    the Google authorize URL (which the plugin opens in a browser)."""
+    result = await db.execute(
+        select(Vault).where(Vault.id == vault_id, Vault.user_id == user.id)
+    )
+    vault = result.scalar_one_or_none()
+    if not vault:
+        raise HTTPException(status_code=404, detail="Vault not found")
+
+    # Persist the user's OAuth client creds in the vault Secret. They're
+    # needed at the callback step (to exchange the code for a refresh token)
+    # and also at agent-runtime (gws CLI uses them to refresh access tokens).
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+        import base64
+        namespace = f"{settings.k8s_namespace_prefix}{user.id[:8]}"
+        core = k8s_client.CoreV1Api()
+        core.patch_namespaced_secret(
+            name=f"vault-credentials-{vault.slug}",
+            namespace=namespace,
+            body={"data": {
+                "GWS_CLIENT_ID": base64.b64encode(body.client_id.encode()).decode(),
+                "GWS_CLIENT_SECRET": base64.b64encode(body.client_secret.encode()).decode(),
+            }},
+        )
+    except Exception as e:
+        logger.warning(f"Could not store GWS client creds in Secret: {e}")
+        raise HTTPException(status_code=500, detail="Failed to persist credentials")
+
+    # Build a signed state token so the callback can identify the vault
+    # without keeping any server-side state. JWT signed with our existing
+    # secret is plenty here — short-lived (10 min), tamper-proof.
+    import jwt as _jwt
+    import time
+    state_payload = {"vault_id": vault.id, "exp": int(time.time()) + 600}
+    state = _jwt.encode(state_payload, settings.jwt_secret, algorithm="HS256")
+
+    scopes = body.scopes or DEFAULT_GWS_SCOPES
+    redirect_uri = f"{settings.api_url}/api/v1/auth/gws/callback"
+
+    from urllib.parse import quote
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={quote(body.client_id, safe='')}"
+        f"&response_type=code"
+        f"&scope={'+'.join(quote(s, safe='') for s in scopes)}"
+        f"&redirect_uri={quote(redirect_uri, safe='')}"
+        f"&state={state}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+    )
+    return {"authorize_url": auth_url}
+
+
+@router.get("/{vault_id}/gws/status")
+async def gws_status(
+    vault_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Plugin polls this after kicking off the OAuth flow.
+    Returns connected=true once the callback has stored a refresh token."""
+    result = await db.execute(
+        select(Vault).where(Vault.id == vault_id, Vault.user_id == user.id)
+    )
+    vault = result.scalar_one_or_none()
+    if not vault:
+        raise HTTPException(status_code=404, detail="Vault not found")
+
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+        namespace = f"{settings.k8s_namespace_prefix}{user.id[:8]}"
+        core = k8s_client.CoreV1Api()
+        sec = core.read_namespaced_secret(
+            name=f"vault-credentials-{vault.slug}",
+            namespace=namespace,
+        )
+        data = sec.data or {}
+        connected = bool(data.get("GWS_CREDENTIALS_JSON"))
+        # Extract the email from the stored credentials.json if present
+        email = None
+        if connected:
+            import base64, json as _json
+            try:
+                creds = _json.loads(base64.b64decode(data["GWS_CREDENTIALS_JSON"]).decode())
+                email = creds.get("email")
+            except Exception:
+                pass
+        return {"connected": connected, "email": email}
+    except Exception as e:
+        logger.warning(f"Could not read gws status: {e}")
+        return {"connected": False}
+
+
+@router.post("/{vault_id}/gws/disconnect")
+async def gws_disconnect(
+    vault_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke locally — clear the stored credentials. Doesn't revoke at Google."""
+    result = await db.execute(
+        select(Vault).where(Vault.id == vault_id, Vault.user_id == user.id)
+    )
+    vault = result.scalar_one_or_none()
+    if not vault:
+        raise HTTPException(status_code=404, detail="Vault not found")
+
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+        import base64
+        namespace = f"{settings.k8s_namespace_prefix}{user.id[:8]}"
+        core = k8s_client.CoreV1Api()
+        core.patch_namespaced_secret(
+            name=f"vault-credentials-{vault.slug}",
+            namespace=namespace,
+            body={"data": {
+                "GWS_CLIENT_ID": base64.b64encode(b"").decode(),
+                "GWS_CLIENT_SECRET": base64.b64encode(b"").decode(),
+                "GWS_CREDENTIALS_JSON": base64.b64encode(b"").decode(),
+            }},
+        )
+    except Exception as e:
+        logger.warning(f"Could not clear gws creds: {e}")
 
     return {"status": "ok"}
 

@@ -212,3 +212,139 @@ async def oauth_callback(provider: str, code: str, state: str = "", db: AsyncSes
         email=user.email,
         plan=plan,
     )
+
+
+# ── Google Workspace BYOC OAuth callback ──────────────────────────
+# This is hit by Google after the user authorizes via *their own* OAuth
+# client. We use the user's stored client_secret (set via /vaults/{id}/gws/setup)
+# to exchange the code for a refresh token, then store the credentials in
+# the vault's K8s Secret in the format the agent's gws CLI expects.
+
+@router.get("/gws/callback")
+async def gws_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if error:
+        return _gws_html_response(False, f"Google returned an error: {error}")
+    if not code or not state:
+        return _gws_html_response(False, "Missing code or state from Google.")
+
+    # Decode signed state to find the vault
+    import jwt as _jwt
+    try:
+        payload = _jwt.decode(state, settings.jwt_secret, algorithms=["HS256"])
+        vault_id = payload["vault_id"]
+    except Exception:
+        return _gws_html_response(False, "Invalid or expired state token.")
+
+    from cloud.models.vault import Vault as _Vault
+    result = await db.execute(select(_Vault).where(_Vault.id == vault_id))
+    vault = result.scalar_one_or_none()
+    if not vault:
+        return _gws_html_response(False, "Vault not found.")
+
+    # Read the user's OAuth client creds back from the K8s Secret to do
+    # the code-for-token exchange.
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+        import base64
+        namespace = f"{settings.k8s_namespace_prefix}{vault.user_id[:8]}"
+        core = k8s_client.CoreV1Api()
+        sec = core.read_namespaced_secret(
+            name=f"vault-credentials-{vault.slug}",
+            namespace=namespace,
+        )
+        data = sec.data or {}
+        client_id = base64.b64decode(data.get("GWS_CLIENT_ID", "")).decode()
+        client_secret = base64.b64decode(data.get("GWS_CLIENT_SECRET", "")).decode()
+        if not client_id or not client_secret:
+            return _gws_html_response(False, "OAuth client credentials missing — re-run setup.")
+    except Exception as e:
+        logger.exception("Failed to read GWS client creds")
+        return _gws_html_response(False, f"Failed to load credentials: {e}")
+
+    # Exchange code → refresh_token using the user's own client_secret
+    redirect_uri = f"{settings.api_url}/api/v1/auth/gws/callback"
+    try:
+        async with httpx.AsyncClient() as client:
+            tok_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            tokens = tok_resp.json()
+        if "refresh_token" not in tokens:
+            return _gws_html_response(
+                False,
+                "Google didn't return a refresh token. Try revoking access at "
+                "myaccount.google.com/permissions and retry.",
+            )
+
+        # Fetch the user's email so we can show "Connected as foo@bar.com"
+        email = ""
+        try:
+            async with httpx.AsyncClient() as client:
+                ui = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {tokens.get('access_token', '')}"},
+                )
+                email = ui.json().get("email", "")
+        except Exception:
+            pass
+
+        # Stored format: a single JSON blob the gws CLI can consume.
+        # See https://github.com/sigsep/gws-cli for the expected shape.
+        creds_json = {
+            "type": "authorized_user",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": tokens["refresh_token"],
+            "email": email,
+        }
+        import json as _json
+        creds_b64 = base64.b64encode(_json.dumps(creds_json).encode()).decode()
+        core.patch_namespaced_secret(
+            name=f"vault-credentials-{vault.slug}",
+            namespace=namespace,
+            body={"data": {"GWS_CREDENTIALS_JSON": creds_b64}},
+        )
+    except Exception as e:
+        logger.exception("GWS token exchange failed")
+        return _gws_html_response(False, f"Token exchange failed: {e}")
+
+    return _gws_html_response(True, f"Connected{' as ' + email if email else ''}.")
+
+
+def _gws_html_response(ok: bool, message: str):
+    """Render a tiny success/failure page the user sees in their browser
+    after the Google authorize redirect lands here. The plugin polls
+    /vaults/{id}/gws/status separately to detect completion — it doesn't
+    rely on this page."""
+    from fastapi.responses import HTMLResponse
+    color = "#22c55e" if ok else "#ef4444"
+    title = "DavyJones · Google Workspace connected" if ok else "DavyJones · Connection failed"
+    icon = "✓" if ok else "✗"
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>body{{font-family:system-ui;background:#0b0d10;color:#e8eaed;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
+.card{{max-width:480px;padding:32px;background:#16191e;border-radius:12px;text-align:center}}
+.icon{{font-size:48px;color:{color};margin-bottom:16px}}
+h1{{font-size:20px;margin:0 0 12px}}
+p{{color:#9aa4b2;margin:0;line-height:1.5}}</style></head>
+<body><div class="card"><div class="icon">{icon}</div>
+<h1>{title.split(' · ')[1]}</h1><p>{message}</p>
+<p style="margin-top:16px;font-size:13px">You can close this tab and return to Obsidian.</p>
+</div></body></html>"""
+    return HTMLResponse(content=html, status_code=200 if ok else 400)
