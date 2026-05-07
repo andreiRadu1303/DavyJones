@@ -1,26 +1,33 @@
-# Stage 1: Get the official GitHub MCP server binary
+# Stage 1: pull the official GitHub MCP server binary (stdio mode only)
 FROM ghcr.io/github/github-mcp-server AS github-mcp
 
-# Stage 2: Node image with supergateway to bridge stdio→SSE
-FROM node:20-slim
+# Stage 2: Python base for mcp-proxy (spec-compliant stdio→SSE bridge).
+# We previously used `supergateway`, which initialised the connection
+# correctly but Claude Code consistently marked the server as `failed`
+# and the github tools never appeared in the agent's tool list. The
+# Python `mcp-proxy` package handles the SSE/JSON-RPC framing the
+# Claude Code MCP client expects.
+FROM python:3.12-slim
 
-# CA certs so github-mcp-server can verify api.github.com over TLS.
-# Without these, every GitHub API call fails with "x509: certificate
-# signed by unknown authority" — the MCP would still start but be
-# unusable.
+# CA certs so the underlying github-mcp-server can verify api.github.com.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Install supergateway (stdio-to-SSE bridge)
-RUN npm install -g supergateway
+# mcp-proxy provides `mcp-proxy --sse-port N -- <stdio cmd>` which spawns
+# the stdio server and exposes /sse + /messages on the given port.
+RUN pip install --no-cache-dir mcp-proxy==0.11.0
 
-# Copy the GitHub MCP server binary from the official image
+# Copy the GitHub MCP stdio binary from the official image
 COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-server
 RUN chmod +x /usr/local/bin/github-mcp-server
 
 EXPOSE 3003
 
-# Wrap the stdio MCP server with supergateway to expose SSE on port 3003
-CMD ["supergateway", \
-     "--stdio", "github-mcp-server stdio", \
+# `--allow-origin "*"` keeps in-cluster service-to-service calls happy.
+# `--pass-environment` forwards GITHUB_PERSONAL_ACCESS_TOKEN to the child.
+CMD ["mcp-proxy", \
+     "--host", "0.0.0.0", \
      "--port", "3003", \
-     "--outputTransport", "sse"]
+     "--allow-origin", "*", \
+     "--pass-environment", \
+     "--", \
+     "github-mcp-server", "stdio"]
