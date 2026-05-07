@@ -122,6 +122,8 @@ async def get_reports(
     vault_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
 ):
     """Proxy reports from the vault's dispatcher."""
     vault = await _get_user_vault(vault_id, user, db)
@@ -129,11 +131,36 @@ async def get_reports(
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{url}/api/reports")
+            resp = await client.get(
+                f"{url}/api/reports",
+                params={"limit": limit, "offset": offset},
+            )
             resp.raise_for_status()
             return resp.json()
     except (httpx.ConnectError, httpx.ReadTimeout):
         return []
+
+
+@router.get("/reports/{report_id}")
+async def get_report(
+    vault_id: str,
+    report_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy a single report's content from the vault's dispatcher."""
+    vault = await _get_user_vault(vault_id, user, db)
+    url = _dispatcher_url(user.id, vault.slug)
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{url}/api/reports/{report_id}")
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail="Report not found")
+            resp.raise_for_status()
+            return resp.json()
+    except (httpx.ConnectError, httpx.ReadTimeout):
+        raise HTTPException(status_code=503, detail="Dispatcher not running")
 
 
 @router.get("/api/claude-changes")

@@ -459,13 +459,15 @@ class DavyJonesPlugin extends Plugin {
     if (!this._isCloudMode()) return;
     const shell = process.env.SHELL || "/bin/bash";
     const env = this._readDavyJonesEnv();
-    // Lazy-init the remote URL the first time. Onboarding sets this normally,
-    // but it can be missing if Forgejo provisioning was broken when the user
-    // first connected — fetch it on demand so the user doesn't have to redo
-    // onboarding to recover.
-    if (!env.DAVYJONES_GIT_REMOTE && env.DAVYJONES_VAULT_ID && env.DAVYJONES_CLOUD_API) {
+    // Lazy-init when either:
+    //   - the remote URL hasn't been fetched yet (broken onboarding case), or
+    //   - the vault folder isn't a git repo yet (the URL was set but never
+    //     followed by a `git init` — e.g. on a fresh Obsidian vault).
+    // Both paths run the same recovery flow.
+    const hasGit = fs.existsSync(path.join(this._vaultPath, ".git"));
+    if ((!env.DAVYJONES_GIT_REMOTE || !hasGit) && env.DAVYJONES_VAULT_ID && env.DAVYJONES_CLOUD_API) {
       this._lazyInitGitRemote();
-      return;  // skip this poll; the next one will pick up the new env
+      return;  // skip this poll; the next one will pick up the new env / repo
     }
     // Use stored remote URL (includes credentials) or fallback to named remote
     const remote = env.DAVYJONES_GIT_REMOTE ? `"${env.DAVYJONES_GIT_REMOTE}"` : "davyjones-cloud";
@@ -488,8 +490,9 @@ class DavyJonesPlugin extends Plugin {
       (err, stdout) => {
         if (!err && stdout && !stdout.includes("Already up to date")) {
           console.log("DavyJones cloud pull:", stdout.trim());
-          // Trigger Obsidian to re-read changed files
-          this.app.vault.trigger("modify");
+          // Obsidian's built-in fs watcher will detect changed files
+          // within ~1s — no manual trigger needed (and trigger("modify")
+          // without args throws inside Obsidian's onFileAdd handler).
         }
       },
     );
@@ -522,19 +525,37 @@ class DavyJonesPlugin extends Plugin {
       // Configure the local remote and seed the branch. --force on the
       // initial push is acceptable: this only runs when the cloud has no
       // history yet (or the user is onboarding into a fresh repo).
+      // If the vault directory is not yet a git repo, initialise one and
+      // make a single seed commit before wiring the remote — otherwise
+      // every subsequent push/pull would fail with "not a git repository".
       const shell = process.env.SHELL || "/bin/bash";
+      // Use git compatible with older versions (macOS default git can be
+      // <2.28, which doesn't support `init -b main`). Sequence of commands
+      // separated by `;` so each step can fail without aborting the rest.
       exec(
-        `${shell} -c 'cd "${this._vaultPath}" && \
-          git remote remove davyjones-cloud 2>/dev/null; \
-          git remote add davyjones-cloud "${myVault.git_push_url}" && \
-          (git fetch davyjones-cloud main 2>&1 || true) && \
-          (git pull --rebase davyjones-cloud main --allow-unrelated-histories 2>&1 || true) && \
-          (git push davyjones-cloud main 2>&1 || git push davyjones-cloud HEAD:main --force 2>&1) \
-          ; true'`,
+        `${shell} -c '
+          cd "${this._vaultPath}" || exit 1
+          if [ ! -d .git ]; then
+            echo "[davyjones] running git init"
+            git init
+            git symbolic-ref HEAD refs/heads/main 2>/dev/null
+            git -c user.email=vault@local -c user.name="Vault Owner" commit --allow-empty -m "DavyJones: vault initialised"
+          fi
+          # Make sure HEAD is on main (some users start on master)
+          if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "master" ]; then
+            git branch -m master main 2>/dev/null
+          fi
+          git remote remove davyjones-cloud 2>/dev/null || true
+          git remote add davyjones-cloud "${myVault.git_push_url}"
+          git fetch davyjones-cloud main 2>&1 || true
+          git pull --rebase davyjones-cloud main --allow-unrelated-histories 2>&1 || true
+          git push davyjones-cloud HEAD:main 2>&1 || git push davyjones-cloud HEAD:main --force 2>&1
+          echo "[davyjones] init done"
+        '`,
         { timeout: 60000, cwd: this._vaultPath },
-        (err, stdout) => {
-          console.log("[DavyJones] git remote initialised:", (stdout || "").trim().split("\n").pop());
-          this.app.vault.trigger("modify");
+        (err, stdout, stderr) => {
+          const out = (stdout || "") + (stderr ? "\n" + stderr : "");
+          console.log("[DavyJones] _lazyInitGitRemote output:\n" + out);
         },
       );
     } catch (e) {
