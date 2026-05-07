@@ -4,6 +4,12 @@ FROM ghcr.io/github/github-mcp-server AS github-mcp
 # Stage 2: Node image with supergateway to bridge stdio→SSE
 FROM node:20-slim
 
+# CA certs so github-mcp-server can verify api.github.com over TLS.
+# Without these, every GitHub API call fails with "x509: certificate
+# signed by unknown authority" — the MCP would still start but be
+# unusable.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Install supergateway (stdio-to-SSE bridge)
 RUN npm install -g supergateway
 
