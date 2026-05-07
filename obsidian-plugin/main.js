@@ -459,6 +459,14 @@ class DavyJonesPlugin extends Plugin {
     if (!this._isCloudMode()) return;
     const shell = process.env.SHELL || "/bin/bash";
     const env = this._readDavyJonesEnv();
+    // Lazy-init the remote URL the first time. Onboarding sets this normally,
+    // but it can be missing if Forgejo provisioning was broken when the user
+    // first connected — fetch it on demand so the user doesn't have to redo
+    // onboarding to recover.
+    if (!env.DAVYJONES_GIT_REMOTE && env.DAVYJONES_VAULT_ID && env.DAVYJONES_CLOUD_API) {
+      this._lazyInitGitRemote();
+      return;  // skip this poll; the next one will pick up the new env
+    }
     // Use stored remote URL (includes credentials) or fallback to named remote
     const remote = env.DAVYJONES_GIT_REMOTE ? `"${env.DAVYJONES_GIT_REMOTE}"` : "davyjones-cloud";
 
@@ -485,6 +493,55 @@ class DavyJonesPlugin extends Plugin {
         }
       },
     );
+  }
+
+  /** Fetch the per-vault git_push_url from the cloud and wire it into the
+   *  local repo + .davyjones.env. Idempotent — safe to call repeatedly.
+   *  Recovers from the case where onboarding ran before Forgejo was set up. */
+  async _lazyInitGitRemote() {
+    if (this._initingGitRemote) return;  // de-dupe concurrent attempts
+    this._initingGitRemote = true;
+    try {
+      const env = this._readDavyJonesEnv();
+      if (!env.DAVYJONES_VAULT_ID || !env.DAVYJONES_CLOUD_API) return;
+
+      const resp = await this._cloudFetch(`${env.DAVYJONES_CLOUD_API}/api/v1/vaults`);
+      if (!resp.ok) return;
+      const vaults = await resp.json();
+      const myVault = (vaults || []).find(v => v.id === env.DAVYJONES_VAULT_ID);
+      if (!myVault || !myVault.git_push_url) {
+        console.log("[DavyJones] cloud has no git_push_url for this vault yet");
+        return;
+      }
+
+      // Persist URL for future syncs
+      const config = this._readDavyJonesEnv();
+      config.DAVYJONES_GIT_REMOTE = myVault.git_push_url;
+      this._writeDavyJonesEnv(config);
+
+      // Configure the local remote and seed the branch. --force on the
+      // initial push is acceptable: this only runs when the cloud has no
+      // history yet (or the user is onboarding into a fresh repo).
+      const shell = process.env.SHELL || "/bin/bash";
+      exec(
+        `${shell} -c 'cd "${this._vaultPath}" && \
+          git remote remove davyjones-cloud 2>/dev/null; \
+          git remote add davyjones-cloud "${myVault.git_push_url}" && \
+          (git fetch davyjones-cloud main 2>&1 || true) && \
+          (git pull --rebase davyjones-cloud main --allow-unrelated-histories 2>&1 || true) && \
+          (git push davyjones-cloud main 2>&1 || git push davyjones-cloud HEAD:main --force 2>&1) \
+          ; true'`,
+        { timeout: 60000, cwd: this._vaultPath },
+        (err, stdout) => {
+          console.log("[DavyJones] git remote initialised:", (stdout || "").trim().split("\n").pop());
+          this.app.vault.trigger("modify");
+        },
+      );
+    } catch (e) {
+      console.log("[DavyJones] _lazyInitGitRemote failed:", e.message || e);
+    } finally {
+      this._initingGitRemote = false;
+    }
   }
 
   _readDavyJonesEnv() {
@@ -4349,7 +4406,10 @@ class DavyJonesSettingTab extends PluginSettingTab {
         .setPlaceholder("sk-ant-oat01-...")
         .setValue(authValue)
         .onChange((value) => {
-          this._config["CLAUDE_CODE_OAUTH_TOKEN"] = value.trim();
+          // Strip ALL whitespace, not just edges — terminal-soft-wrapped
+          // pastes routinely sneak a literal space into the middle of the
+          // token, which makes Claude reject it with "Invalid bearer token".
+          this._config["CLAUDE_CODE_OAUTH_TOKEN"] = value.replace(/\s+/g, "");
           this._dirty = true;
           const hasVal = !!value.trim();
           authDot.removeClass("davyjones-dot-on", "davyjones-dot-off");

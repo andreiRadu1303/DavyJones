@@ -203,6 +203,10 @@ metadata:
     vault: ${VAULT_SLUG}
 spec:
   replicas: ${REPLICAS}
+  # Same RWO-PVC story as the dispatcher: must rebuild fresh, not roll
+  # alongside the previous pod, or the volume can't be re-attached.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: davyjones
@@ -215,6 +219,18 @@ spec:
         component: obsidian-mcp
         vault: ${VAULT_SLUG}
     spec:
+      # Co-locate with the dispatcher (they share the vault PVC; RWO can
+      # only be attached to one node). The dispatcher schedules first
+      # (no affinity), then this pod follows it.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app: davyjones
+                component: dispatcher
+                vault: ${VAULT_SLUG}
       containers:
       - name: obsidian-mcp
         image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/obsidian-mcp:latest
@@ -263,6 +279,8 @@ metadata:
     vault: ${VAULT_SLUG}
 spec:
   replicas: ${REPLICAS}
+  strategy:
+    type: Recreate  # shares vault PVC with dispatcher, see obsidian-mcp note
   selector:
     matchLabels:
       app: davyjones
@@ -275,6 +293,15 @@ spec:
         component: davyjones-mcp
         vault: ${VAULT_SLUG}
     spec:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app: davyjones
+                component: dispatcher
+                vault: ${VAULT_SLUG}
       containers:
       - name: davyjones-mcp
         image: europe-west1-docker.pkg.dev/central-surf-270818/davyjones/davyjones-mcp:latest

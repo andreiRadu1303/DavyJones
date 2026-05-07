@@ -6,9 +6,12 @@ import string
 
 logger = logging.getLogger(__name__)
 
-# Tier resource quotas
+# Tier resource quotas. While subscription enforcement is disabled
+# (pre-monetization), free is intentionally generous enough to fit one
+# agent Job (2Gi by itself) plus the dispatcher and 5 MCP services with
+# breathing room. Re-tighten when monetization comes back.
 TIER_QUOTAS = {
-    "free":  {"max_pods": "10",  "max_cpu": "1",    "max_memory": "2Gi",  "replicas": "0"},
+    "free":  {"max_pods": "20",  "max_cpu": "4",    "max_memory": "8Gi",  "replicas": "1"},
     "pro":   {"max_pods": "20",  "max_cpu": "4",    "max_memory": "8Gi",  "replicas": "1"},
     "team":  {"max_pods": "50",  "max_cpu": "10",   "max_memory": "20Gi", "replicas": "1"},
 }

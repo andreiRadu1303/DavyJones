@@ -91,6 +91,28 @@ class K8sJobRuntime(ContainerRuntime):
                     template=client.V1PodTemplateSpec(
                         spec=client.V1PodSpec(
                             restart_policy="Never",
+                            # Pin the agent to the dispatcher's node. The vault
+                            # PVC is ReadWriteOnce — across-node mounting is
+                            # impossible. Without this affinity GKE Autopilot
+                            # routinely places the agent on a different node
+                            # under memory pressure, causing the Multi-Attach
+                            # error and a 10-min DeadlineExceeded stall.
+                            affinity=client.V1Affinity(
+                                pod_affinity=client.V1PodAffinity(
+                                    required_during_scheduling_ignored_during_execution=[
+                                        client.V1PodAffinityTerm(
+                                            topology_key="kubernetes.io/hostname",
+                                            label_selector=client.V1LabelSelector(
+                                                match_labels={
+                                                    "app": "davyjones",
+                                                    "component": "dispatcher",
+                                                    "vault": VAULT_SLUG,
+                                                },
+                                            ),
+                                        ),
+                                    ],
+                                ),
+                            ),
                             containers=[
                                 client.V1Container(
                                     name="agent",
