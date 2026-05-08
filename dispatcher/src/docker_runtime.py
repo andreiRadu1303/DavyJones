@@ -90,6 +90,7 @@ class DockerRuntime(ContainerRuntime):
                 environment=env,
                 network=DOCKER_NETWORK,
                 working_dir="/vault",
+                extra_hosts={"host.docker.internal": "host-gateway"},
             )
             prompt_tar = _make_tar("task-prompt.txt", prompt.encode("utf-8"))
             container.put_archive("/tmp", prompt_tar)
@@ -210,6 +211,7 @@ class DockerRuntime(ContainerRuntime):
                 environment=env,
                 network=DOCKER_NETWORK,
                 working_dir="/vault",
+                extra_hosts={"host.docker.internal": "host-gateway"},
             )
             prompt_tar = _make_tar("task-prompt.txt", prompt.encode("utf-8"))
             container.put_archive("/tmp", prompt_tar)

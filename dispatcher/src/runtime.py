@@ -18,6 +18,7 @@ from typing import Callable, Optional
 
 from src.config import (
     AGENT_IMAGE,
+    ANTHROPIC_BASE_URL,
     CREDS_HOST_PATH,
     DISPATCHER_HOSTNAME,
     DOCKER_NETWORK,
@@ -85,6 +86,14 @@ def build_agent_env(max_turns: int, output_format: str = "json") -> dict[str, st
         env["GITLAB_MCP_URL"] = f"http://{_prefix}-gitlab-mcp-1:3002/sse"
         env["GITHUB_MCP_URL"] = f"http://{_prefix}-github-mcp-1:3003/sse"
         env["DAVYJONES_MCP_URL"] = f"http://{_prefix}-davyjones-mcp-1:3004/sse"
+
+    # Claude API endpoint override — rewrite localhost to host gateway for Docker
+    if ANTHROPIC_BASE_URL:
+        url = ANTHROPIC_BASE_URL
+        if RUNTIME_BACKEND != "k8s":
+            url = url.replace("://localhost:", "://host.docker.internal:")
+            url = url.replace("://127.0.0.1:", "://host.docker.internal:")
+        env["ANTHROPIC_BASE_URL"] = url
 
     return env
 

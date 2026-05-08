@@ -656,7 +656,7 @@ class DavyJonesPlugin extends Plugin {
     ];
 
     const sections = [
-      { header: "# Claude Auth", keys: ["CLAUDE_CODE_OAUTH_TOKEN"] },
+      { header: "# Claude Auth", keys: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"] },
       { header: "# GitHub", keys: ["GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_MCP_ENABLED"] },
       { header: "# GitLab", keys: ["GITLAB_TOKEN", "GITLAB_API_URL", "GITLAB_MCP_ENABLED"] },
       { header: "# Slack", keys: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_MCP_ENABLED"] },
@@ -4556,6 +4556,22 @@ class DavyJonesSettingTab extends PluginSettingTab {
         });
       });
     }
+
+    // ── Claude API URL ──
+    const apiUrlValue = this._config["ANTHROPIC_BASE_URL"] || "";
+    new Setting(containerEl)
+      .setName("Claude API URL")
+      .setDesc("Override the Anthropic API endpoint. Leave blank to use the default. Set to a local URL (e.g. http://localhost:8080) to use a self-hosted or proxy endpoint.")
+      .addText((text) => {
+        text
+          .setPlaceholder("https://api.anthropic.com")
+          .setValue(apiUrlValue)
+          .onChange((value) => {
+            this._config["ANTHROPIC_BASE_URL"] = value.trim();
+            this._dirty = true;
+          });
+        text.inputEl.style.width = "100%";
+      });
 
     // ── MCP Services section ──
     const desc = containerEl.createEl("p", {
