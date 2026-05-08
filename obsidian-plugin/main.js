@@ -862,6 +862,9 @@ class DavyJonesPlugin extends Plugin {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           claude_token: config.CLAUDE_CODE_OAUTH_TOKEN || null,
+          // Use ?? so an empty string (clear-the-override) is sent
+          // through, while a missing key sends null (no change).
+          anthropic_base_url: config.ANTHROPIC_BASE_URL ?? null,
           github_token: config.GITHUB_TOKEN || null,
           gitlab_token: config.GITLAB_TOKEN || null,
           gitlab_api_url: config.GITLAB_API_URL || null,

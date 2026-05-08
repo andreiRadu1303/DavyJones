@@ -38,6 +38,7 @@ class VaultResponse(BaseModel):
 
 class VaultConfigUpdate(BaseModel):
     claude_token: str | None = None
+    anthropic_base_url: str | None = None
     github_token: str | None = None
     gitlab_token: str | None = None
     gitlab_api_url: str | None = None
@@ -328,6 +329,15 @@ async def update_vault_config(
         secret_data = {}
         if body.claude_token:
             secret_data["CLAUDE_CODE_OAUTH_TOKEN"] = base64.b64encode(body.claude_token.encode()).decode()
+        if body.anthropic_base_url is not None:
+            # Not actually a secret — placed here only because the
+            # dispatcher Deployment already does `envFrom: secretRef`
+            # for vault-credentials, so adding this key here makes it
+            # show up as ANTHROPIC_BASE_URL in the dispatcher pod env
+            # without manifest changes. The dispatcher's runtime then
+            # forwards it to spawned agent containers.
+            # Empty string is a valid value meaning "clear override".
+            secret_data["ANTHROPIC_BASE_URL"] = base64.b64encode(body.anthropic_base_url.encode()).decode()
         if body.github_token:
             secret_data["GITHUB_TOKEN"] = base64.b64encode(body.github_token.encode()).decode()
         if body.gitlab_token:
@@ -378,6 +388,10 @@ async def update_vault_config(
                 # CLAUDE_CODE_OAUTH_TOKEN is consumed by the dispatcher (envFrom),
                 # restart it so spawned agents see the new token.
                 "CLAUDE_CODE_OAUTH_TOKEN": [f"dispatcher-{vault.slug}"],
+                # ANTHROPIC_BASE_URL likewise lives on the dispatcher's env
+                # (via envFrom) and is read once at process start; restart
+                # so a freshly-set proxy URL takes effect.
+                "ANTHROPIC_BASE_URL": [f"dispatcher-{vault.slug}"],
             }
             restart_targets = set()
             for key in secret_data:
