@@ -937,7 +937,10 @@ class DavyJonesPlugin extends Plugin {
     this._committing = true;
     this._renderGitBar();
 
-    const cmd = 'git add -A && git -c user.name="Vault Owner" -c user.email="vault-owner@local" commit -m "vault update"';
+    // Check for staged changes after `git add -A`. If there's nothing to
+    // commit, exit cleanly instead of letting `git commit` fail noisily —
+    // a "no-op commit" is the correct behaviour, not an error.
+    const cmd = 'git add -A && (git diff --cached --quiet || git -c user.name="Vault Owner" -c user.email="vault-owner@local" commit -m "vault update")';
     exec(cmd, { cwd: this._vaultPath, timeout: 15000 }, (err, stdout, stderr) => {
       this._committing = false;
       if (err) {
