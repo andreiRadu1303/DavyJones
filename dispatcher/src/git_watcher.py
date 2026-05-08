@@ -133,11 +133,17 @@ def pull_remote(repo: git.Repo) -> bool:
 
 
 def push_remote(repo: git.Repo) -> bool:
-    """Push to the tracking remote (if configured).
+    """Pull-rebase, then push to the tracking remote (if configured).
 
     Returns True if push succeeded, False otherwise.
     Silently does nothing if there is no remote or no tracking branch.
     Used in cloud mode to sync agent changes back to Forgejo.
+
+    The pull-rebase step is critical: the user's plugin can push to the
+    same remote at any time (e.g. when they commit local edits), and
+    without rebasing first, the dispatcher's next push fails as a
+    non-fast-forward and ALL subsequent pushes silently fail with the
+    same error. Without rebase, agent output never reaches the user.
     """
     try:
         if not repo.remotes:
@@ -147,6 +153,22 @@ def push_remote(repo: git.Repo) -> bool:
         tracking = branch.tracking_branch()
         if tracking is None:
             return False
+
+        # Best-effort rebase first. If there's nothing to rebase, this is
+        # a no-op. If there's a real conflict we let the push fail naturally
+        # below — better to surface a noisy log than silently drop work.
+        try:
+            remote.fetch()
+            repo.git.rebase(f"{remote.name}/{branch.name}")
+        except git.GitCommandError as e:
+            # Common case: nothing to rebase, or rebase auto-completed.
+            # Real conflicts: abort the rebase so we don't leave the repo
+            # in a half-rebased state — the next cycle will retry.
+            try:
+                repo.git.rebase("--abort")
+            except git.GitCommandError:
+                pass
+            logger.warning("git rebase before push failed: %s", e)
 
         remote.push()
         logger.info("Pushed to %s/%s", remote.name, branch.name)

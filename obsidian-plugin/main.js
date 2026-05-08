@@ -472,24 +472,26 @@ class DavyJonesPlugin extends Plugin {
     // Use stored remote URL (includes credentials) or fallback to named remote
     const remote = env.DAVYJONES_GIT_REMOTE ? `"${env.DAVYJONES_GIT_REMOTE}"` : "davyjones-cloud";
 
-    // Push any unpushed commits
+    // Pull-rebase FIRST, then push. The reverse order silently breaks
+    // sync: if origin has any commit local doesn't, the push fails as
+    // non-fast-forward, and on the next tick the same race repeats —
+    // local commits never reach Forgejo and the user never sees agent
+    // output. Stash any uncommitted edits so the rebase doesn't block.
     exec(
-      `${shell} -c 'cd "${this._vaultPath}" && git push ${remote} main 2>&1'`,
-      { timeout: 30000, cwd: this._vaultPath },
+      `${shell} -c 'cd "${this._vaultPath}" && \
+        git stash --include-untracked 2>&1 | head -1 ; \
+        git pull --rebase ${remote} main 2>&1 ; \
+        git stash pop 2>/dev/null; \
+        git push ${remote} main 2>&1; \
+        true'`,
+      { timeout: 60000, cwd: this._vaultPath },
       (err, stdout) => {
-        if (err && !stdout?.includes("Everything up-to-date")) {
-          console.log("DavyJones cloud push:", stdout?.trim() || err.message);
-        }
-      },
-    );
-
-    // Pull agent changes from cloud (stash local changes first so rebase doesn't block)
-    exec(
-      `${shell} -c 'cd "${this._vaultPath}" && git stash && git pull --rebase ${remote} main && git stash pop 2>/dev/null; true'`,
-      { timeout: 30000, cwd: this._vaultPath },
-      (err, stdout) => {
-        if (!err && stdout && !stdout.includes("Already up to date")) {
-          console.log("DavyJones cloud pull:", stdout.trim());
+        const out = (stdout || "").trim();
+        if (!out) return;
+        const isQuiet = out.includes("Already up to date") &&
+                        out.includes("Everything up-to-date");
+        if (!isQuiet) {
+          console.log("[DavyJones] cloud sync:", out);
           // Obsidian's built-in fs watcher will detect changed files
           // within ~1s — no manual trigger needed (and trigger("modify")
           // without args throws inside Obsidian's onFileAdd handler).
