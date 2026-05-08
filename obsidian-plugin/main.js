@@ -4262,7 +4262,7 @@ class DavyJonesControlPanel extends ItemView {
 const CP_SERVICE_DEFS = [
   { id: "github", name: "GitHub", tokenKey: "GITHUB_TOKEN", desc: "Repos, issues, PRs, actions, code search.", hint: "GitHub > Settings > Developer settings > Personal access tokens", prefix: "ghp_", supportsMulti: true },
   { id: "gitlab", name: "GitLab", tokenKey: "GITLAB_TOKEN", desc: "Repos, issues, MRs, files, branches.", hint: "GitLab > Settings > Access Tokens", prefix: "glpat-", supportsMulti: true },
-  { id: "slack", name: "Slack", tokenKey: "SLACK_BOT_TOKEN", desc: "Channels, messages, reactions, users, search.", hint: "api.slack.com/apps > OAuth & Permissions", prefix: "xoxb-", supportsMulti: false },
+  { id: "slack", name: "Slack", tokenKey: "SLACK_BOT_TOKEN", desc: "Channels, messages, reactions, users, search. Use a User Token (xoxp-) to have agents act as you.", hint: "api.slack.com/apps > OAuth & Permissions", prefix: "xoxb- or xoxp-", supportsMulti: false },
 ];
 
 // ─── MCP Configuration Modal ──────────────────────────────────
@@ -4473,10 +4473,10 @@ const SERVICE_DEFS = [
     keys: [
       {
         key: "SLACK_BOT_TOKEN",
-        label: "Bot Token",
-        desc: "Channels, messages, reactions, users, search, pins.",
+        label: "Slack Token",
+        desc: "Bot Token (xoxb-) posts as the bot. User Token (xoxp-) posts as you — configure User Token Scopes in your Slack app and use that token to have the agent act on your behalf.",
         hint: "api.slack.com/apps > OAuth & Permissions",
-        prefix: "xoxb-",
+        prefix: "xoxb- or xoxp-",
       },
       {
         key: "SLACK_APP_TOKEN",
