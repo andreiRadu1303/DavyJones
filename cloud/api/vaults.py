@@ -486,7 +486,7 @@ async def gws_setup(
     # Build a signed state token so the callback can identify the vault
     # without keeping any server-side state. JWT signed with our existing
     # secret is plenty here — short-lived (10 min), tamper-proof.
-    import jwt as _jwt
+    from jose import jwt as _jwt
     import time
     state_payload = {"vault_id": vault.id, "exp": int(time.time()) + 600}
     state = _jwt.encode(state_payload, settings.jwt_secret, algorithm="HS256")

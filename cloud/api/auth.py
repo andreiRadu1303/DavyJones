@@ -236,7 +236,7 @@ async def gws_callback(
         return _gws_html_response(False, "Missing code or state from Google.")
 
     # Decode signed state to find the vault
-    import jwt as _jwt
+    from jose import jwt as _jwt
     try:
         payload = _jwt.decode(state, settings.jwt_secret, algorithms=["HS256"])
         vault_id = payload["vault_id"]
