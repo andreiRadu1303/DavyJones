@@ -152,11 +152,24 @@ class DavyJonesPlugin extends Plugin {
       }
     });
 
-    // Cloud mode: git sync (every 15s) + heartbeat polling (every 10s)
+    // Cloud mode: heartbeat polling + git sync only when needed.
+    // We deliberately do NOT run a periodic git sync — touching the
+    // working tree every few seconds (`git stash` / `git pull --rebase`
+    // / `git stash pop` / `git push`) contends with Obsidian's own
+    // filesystem operations, causes file-tree flicker, and slows down
+    // file opens. Instead:
+    //   - PULL: triggered by _pollClaudeChanges() when the dispatcher
+    //     signals that the agent committed new files.
+    //   - PUSH: triggered by the manual commit button (sidebar) and by
+    //     _lazyInitGitRemote() during onboarding.
+    //   - As a backstop, run a single sync on plugin load so users with
+    //     a stale local clone catch up immediately.
     if (this._isCloudMode()) {
       this._pollCloudHeartbeat();
-      this.registerInterval(window.setInterval(() => this._cloudGitSync(), 5000));
       this.registerInterval(window.setInterval(() => this._pollCloudHeartbeat(), 10000));
+      // One-shot catch-up on load (5s after, so lazy-init has a chance
+      // to set up the remote first if this is a fresh user).
+      setTimeout(() => this._cloudGitSync(), 5000);
     }
 
     // Periodic refresh
@@ -322,6 +335,11 @@ class DavyJonesPlugin extends Plugin {
         const newKey = Array.from(newTouched).sort().join("|");
         if (oldKey !== newKey) {
           console.log("[DavyJones] Claude-touched files updated:", Array.from(newTouched));
+          // Agent committed files we don't have yet — pull from cloud.
+          // De-duped by _cloudGitSync's own internal handling and by the
+          // fact that newTouched only changes when the agent actually
+          // produced output, so we don't churn on idle.
+          if (this._isCloudMode()) this._cloudGitSync();
         }
         this._claudeTouchedFiles = newTouched;
         this._decorateFileExplorer();
