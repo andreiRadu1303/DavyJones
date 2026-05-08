@@ -476,10 +476,13 @@ class DavyJonesPlugin extends Plugin {
     // sync: if origin has any commit local doesn't, the push fails as
     // non-fast-forward, and on the next tick the same race repeats —
     // local commits never reach Forgejo and the user never sees agent
-    // output. Stash any uncommitted edits so the rebase doesn't block.
+    // output. Stash only TRACKED edits so the rebase doesn't block;
+    // untracked files (e.g. a new note the user just created) stay in
+    // place — using --include-untracked makes them flicker in and out
+    // of the file tree on every poll.
     exec(
       `${shell} -c 'cd "${this._vaultPath}" && \
-        git stash --include-untracked 2>&1 | head -1 ; \
+        git stash 2>&1 | head -1 ; \
         git pull --rebase ${remote} main 2>&1 ; \
         git stash pop 2>/dev/null; \
         git push ${remote} main 2>&1; \
