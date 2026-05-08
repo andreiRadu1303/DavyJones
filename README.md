@@ -36,15 +36,17 @@ Obsidian is a great place to think. DavyJones makes it a great place to get thin
 
 ## Integrations
 
-| Integration | What Agents Can Do |
-|-------------|-------------------|
-| **GitHub** | Create branches, open PRs, comment on issues, manage releases, monitor repo activity |
-| **GitLab** | Manage merge requests, create issues, work with repositories and CI/CD |
-| **Slack** | Read channels, post messages, search conversations, react to messages. Trigger tasks by @mentioning DavyJones |
-| **Google Workspace** | Search Gmail, read emails, list Drive files, query Calendar, read Sheets and Docs |
-| **DavyJones Calendar** | Schedule one-off or recurring agent tasks, manage events programmatically |
+| Integration | What Agents Can Do | How You Connect |
+|-------------|-------------------|-----------------|
+| **GitHub** | Create branches, open PRs, comment on issues, manage releases, monitor repo activity | Personal Access Token from github.com/settings/tokens |
+| **GitLab** | Manage merge requests, create issues, work with repositories and CI/CD. Self-hosted instances supported | Personal Access Token + (optionally) your custom API URL |
+| **Slack** | Read channels, post messages, search conversations, react to messages. Trigger tasks by @mentioning DavyJones | Bot Token (`xoxb-`) for bot-as-agent, or User Token (`xoxp-`) to have agents act as you |
+| **Google Workspace** | Search Gmail, read emails, query Calendar, write to Sheets and Docs, manage Drive files the agent created | OAuth via your own Google Cloud project (sidesteps verification — see [docs/gws-setup.md](docs/gws-setup.md)) |
+| **DavyJones Calendar** | Schedule one-off or recurring agent tasks, manage events programmatically | Built-in, no setup |
 
-All integrations are optional. Enable them by adding the relevant token in settings — the corresponding service starts automatically.
+All integrations are optional. Enable them by adding the relevant credential — the corresponding service starts automatically.
+
+DavyJones uses a **bring-your-own-credential** pattern across the board: you create a token (or OAuth client) in each service yourself and paste it in. We never hold credentials for many users centrally, and you're not gated by Google's verification queue or Slack's marketplace review.
 
 ## Use Cases
 
@@ -96,14 +98,29 @@ Agents fan out across the issues — one per issue — checking PR links, postin
 
 ## Getting Started
 
-### Prerequisites
+DavyJones runs in two modes. Pick whichever matches your situation:
 
+- **Cloud mode** — agents run on our managed Kubernetes cluster. Zero local setup beyond installing the Obsidian plugin. You get isolated per-vault containers, no Docker on your laptop, vault changes sync automatically over git. Best for everyday use.
+- **Self-hosted mode** — agents run locally via Docker Compose. Best if you want everything on your machine, are running on infrastructure you control, or want to develop on the project itself.
+
+### Cloud mode (recommended)
+
+**Prerequisites:** [Obsidian](https://obsidian.md/) and a Claude subscription token (`claude setup-token` from the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)).
+
+1. Install the DavyJones plugin into your Obsidian vault (community plugin browser, or copy `obsidian-plugin/` into `<vault>/.obsidian/plugins/davyjones/`).
+2. Open the vault in Obsidian. The onboarding modal pops up automatically.
+3. Sign in with Google, paste your Claude token, click **Connect**.
+4. Add tokens for any integrations you want (GitHub PAT, GitLab PAT, Slack token, Google Workspace OAuth — see [docs/gws-setup.md](docs/gws-setup.md) for the GWS one-time GCP setup).
+
+You're done. Your vault is now an inbox for agents. Write a task, commit, and the agent's output appears back in your vault automatically.
+
+### Self-hosted mode
+
+**Prerequisites:**
 - [Docker](https://docs.docker.com/get-docker/) with Docker Compose
 - [Obsidian](https://obsidian.md/)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - A Claude authentication token (`claude setup-token`)
-
-### Install
 
 ```bash
 git clone https://github.com/andreiRadu1303/DavyJones.git
@@ -112,23 +129,12 @@ cd DavyJones
 claude setup-token
 
 ./davyjones setup /path/to/your/vault
-```
-
-### Configure
-
-Add your Claude token in one of two ways:
-- Edit `.davyjones.env` in your vault root
-- Or in Obsidian: Settings > DavyJones > paste token > Apply Changes
-
-Optional integrations (GitHub, Slack, GitLab, Google Workspace) are configured the same way — just add the relevant tokens.
-
-### Run
-
-```bash
 ./davyjones start
 ```
 
 A terminal opens with live logs. Open Obsidian, write something, commit, and watch it work.
+
+Add tokens for optional integrations either by editing `.davyjones.env` in your vault root, or via Settings → DavyJones in Obsidian.
 
 | Command | What it does |
 |---------|-------------|
