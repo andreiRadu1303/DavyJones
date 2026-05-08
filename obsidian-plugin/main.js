@@ -108,10 +108,14 @@ class DavyJonesPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.renderUI());
 
     // ── File explorer decoration: mark files touched by Claude agents ──
-    // Clear any stale markers from previous session on startup
+    // Clear any stale markers from previous session on startup. Only
+    // runs if the user has configured DavyJones — otherwise we'd spam
+    // ECONNREFUSED on every fresh install before onboarding.
     this.app.workspace.onLayoutReady(() => {
-      this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
-      setTimeout(() => this._pollClaudeChanges(), 1000);
+      if (this._hasConfig()) {
+        this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+        setTimeout(() => this._pollClaudeChanges(), 1000);
+      }
     });
     // Re-apply decorations when file explorer re-renders (e.g. folder expand/collapse)
     this.registerEvent(this.app.workspace.on("layout-change", () => {
@@ -207,8 +211,11 @@ class DavyJonesPlugin extends Plugin {
 
   onunload() {
     document.querySelectorAll(".davyjones-nav").forEach((el) => el.remove());
-    // Clear server-side markers so next session starts clean
-    this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+    // Clear server-side markers so next session starts clean (skip if
+    // unconfigured — there's no server to talk to)
+    if (this._hasConfig()) {
+      this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes/clear`, { method: "POST" }).catch(() => {});
+    }
     this._claudeTouchedFiles.clear();
     this._decorateFileExplorer(); // remove all markers
     this.app.workspace.detachLeavesOfType(HISTORY_VIEW_TYPE);
@@ -320,10 +327,20 @@ class DavyJonesPlugin extends Plugin {
     }
   }
 
+  /** True iff the user has configured *something* — cloud creds, a
+   *  local dispatcher port, or a Claude token. Used to gate background
+   *  polls so a fresh-install vault doesn't spam ECONNREFUSED while
+   *  the user is still in the onboarding modal. */
+  _hasConfig() {
+    const env = this._readDavyJonesEnv();
+    return !!(env.DAVYJONES_CLOUD_API || env.HTTP_PORT || env.CLAUDE_CODE_OAUTH_TOKEN);
+  }
+
   /**
    * Poll the dispatcher API for files changed by Claude auto-commits.
    */
   async _pollClaudeChanges() {
+    if (!this._hasConfig()) return;
     try {
       const resp = await this._cloudFetch(`${this._dispatcherBase()}/api/claude-changes`);
       if (!resp.ok) return;
