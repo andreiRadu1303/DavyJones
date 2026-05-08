@@ -555,14 +555,33 @@ class DavyJonesPlugin extends Plugin {
       // Use git compatible with older versions (macOS default git can be
       // <2.28, which doesn't support `init -b main`). Sequence of commands
       // separated by `;` so each step can fail without aborting the rest.
+      // Also seed a sensible .gitignore so per-machine Obsidian state and
+      // DavyJones secrets don't end up in git — they cause perpetual
+      // workspace.json merge conflicts and could leak the JWT in
+      // .davyjones.env to the cloud git server.
       exec(
         `${shell} -c '
           cd "${this._vaultPath}" || exit 1
+          for ENTRY in ".obsidian/workspace.json" ".obsidian/workspace-mobile.json" ".obsidian/cache" ".davyjones" ".davyjones.env"; do
+            if ! grep -qxF "$ENTRY" .gitignore 2>/dev/null; then
+              echo "$ENTRY" >> .gitignore
+            fi
+          done
           if [ ! -d .git ]; then
             echo "[davyjones] running git init"
             git init
             git symbolic-ref HEAD refs/heads/main 2>/dev/null
-            git -c user.email=vault@local -c user.name="Vault Owner" commit --allow-empty -m "DavyJones: vault initialised"
+            git add .gitignore
+            git -c user.email=vault@local -c user.name="Vault Owner" commit -m "DavyJones: vault initialised"
+          else
+            # Existing repo — untrack any files we now want ignored.
+            git rm --cached -r --ignore-unmatch \
+              .obsidian/workspace.json .obsidian/workspace-mobile.json .obsidian/cache \
+              .davyjones .davyjones.env 2>/dev/null
+            git add .gitignore 2>/dev/null
+            if ! git diff --cached --quiet 2>/dev/null; then
+              git -c user.email=vault@local -c user.name="Vault Owner" commit -m "DavyJones: untrack local-only state"
+            fi
           fi
           # Make sure HEAD is on main (some users start on master)
           if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "master" ]; then
