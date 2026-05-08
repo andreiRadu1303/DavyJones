@@ -49,3 +49,6 @@ VAULT_SLUG = os.environ.get("VAULT_SLUG", "default")
 RUNTIME_BACKEND = os.environ.get("RUNTIME_BACKEND", "docker")
 K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
 K8S_AGENT_IMAGE = os.environ.get("K8S_AGENT_IMAGE", "davyjones-agent:latest")
+
+# Claude API endpoint override (ANTHROPIC_BASE_URL)
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
