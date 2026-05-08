@@ -1034,6 +1034,21 @@ class DavyJonesPlugin extends Plugin {
     const creds = hb.creds;
     this._statusBarEl.empty();
 
+    // State 0: Activating (transient state during cold-start). Shown
+    // while _switchToThisVaultCloud is mid-flight; cleared by the
+    // heartbeat poll once the dispatcher pod becomes ready. Click is
+    // a no-op here so users can't double-trigger /activate.
+    if (this._activating) {
+      this._statusBarEl.createEl("span", { cls: "davyjones-dot davyjones-dot-warn" });
+      this._statusBarEl.createEl("span", {
+        text: "DavyJones (activating…)",
+        cls: "davyjones-statusbar-text",
+      });
+      this._statusBarEl.style.cursor = "default";
+      this._statusBarEl.onclick = null;
+      return;
+    }
+
     // State 1: Dispatcher not running
     if (!active) {
       this._statusBarEl.createEl("span", { cls: "davyjones-dot davyjones-dot-off" });
@@ -1145,11 +1160,19 @@ class DavyJonesPlugin extends Plugin {
 
   async _switchToThisVaultCloud() {
     new Notice("Activating vault on cloud...");
+    // Flip status bar to "activating…" with amber dot so the user has
+    // a visible signal during the ~10–30s cold-start window. Cleared
+    // either when the next heartbeat poll detects the pod is up, or
+    // after the local fast-poll timeout below.
+    this._activating = true;
+    this._updateStatusBar();
     try {
       const env = this._readDavyJonesEnv();
       const vaultId = env.DAVYJONES_VAULT_ID;
       if (!vaultId) {
         new Notice("No DAVYJONES_VAULT_ID configured. Register this vault first.");
+        this._activating = false;
+        this._updateStatusBar();
         return;
       }
       const resp = await this._cloudFetch(`${this._dispatcherBase()}/activate`, {
@@ -1159,6 +1182,8 @@ class DavyJonesPlugin extends Plugin {
       if (!resp.ok) {
         const text = await resp.text();
         new Notice("Activation failed: " + text);
+        this._activating = false;
+        this._updateStatusBar();
         return;
       }
       new Notice("Vault activated!");
@@ -1167,10 +1192,19 @@ class DavyJonesPlugin extends Plugin {
       const fastPoll = setInterval(async () => {
         await this._pollCloudHeartbeat();
         polls++;
-        if (this._isVaultActive() || polls >= 20) clearInterval(fastPoll);
+        if (this._isVaultActive() || polls >= 20) {
+          clearInterval(fastPoll);
+          // Clear activating state once dispatcher is up (or we've
+          // given up). The status bar will then show online or fall
+          // back to offline naturally.
+          this._activating = false;
+          this._updateStatusBar();
+        }
       }, 3000);
     } catch (e) {
       new Notice("Failed to activate vault: " + e.message);
+      this._activating = false;
+      this._updateStatusBar();
     }
   }
 
