@@ -164,13 +164,16 @@ class DavyJonesPlugin extends Plugin {
     //     _lazyInitGitRemote() during onboarding.
     //   - As a backstop, run a single sync on plugin load so users with
     //     a stale local clone catch up immediately.
-    if (this._isCloudMode()) {
-      this._pollCloudHeartbeat();
-      this.registerInterval(window.setInterval(() => this._pollCloudHeartbeat(), 10000));
-      // One-shot catch-up on load (5s after, so lazy-init has a chance
-      // to set up the remote first if this is a fresh user).
-      setTimeout(() => this._cloudGitSync(), 5000);
-    }
+    //
+    // Schedule the heartbeat poll UNCONDITIONALLY so that a user who
+    // completes onboarding *after* plugin load (env file becomes cloud-
+    // populated mid-session) still gets cloud heartbeats. The
+    // _pollCloudHeartbeat fn already early-returns if !_isCloudMode().
+    this._pollCloudHeartbeat();
+    this.registerInterval(window.setInterval(() => this._pollCloudHeartbeat(), 10000));
+    // Catch-up sync 5s after load; lazy-init handles fresh-vault git
+    // bootstrap. Skipped at runtime if not in cloud mode.
+    setTimeout(() => { if (this._isCloudMode()) this._cloudGitSync(); }, 5000);
 
     // Periodic refresh
     this.registerInterval(window.setInterval(() => {
@@ -4796,25 +4799,14 @@ class DavyJonesCloudOnboardingModal extends Modal {
       config["CLAUDE_CODE_OAUTH_TOKEN"] = this._claudeKeyInput.value.trim();
       this.plugin._writeDavyJonesEnv(config);
 
-      // Set up git remote for cloud sync
-      const gitPushUrl = vault.git_push_url || vault.git_repo_url;
-      if (gitPushUrl) {
-        this._connectStatus.textContent = "Setting up git sync...";
-        const shell = process.env.SHELL || "/bin/bash";
-        const { exec } = require("child_process");
-        // Store the push URL in config so periodic sync can use it
-        config["DAVYJONES_GIT_REMOTE"] = gitPushUrl;
-        await new Promise((resolve) => {
-          exec(
-            `${shell} -c 'cd "${this.plugin._vaultPath}" && git remote remove davyjones-cloud 2>/dev/null; git remote add davyjones-cloud "${gitPushUrl}" && git push davyjones-cloud main --force 2>&1'`,
-            { timeout: 60000 },
-            (err, stdout, stderr) => {
-              if (err) console.log("DavyJones git push:", stderr || err.message);
-              resolve();
-            },
-          );
-        });
-      }
+      // Set up git remote for cloud sync. Delegate to _lazyInitGitRemote
+      // so this path goes through the same gitignore + git-init handling
+      // as the periodic sync — avoids "fatal: not a git repository" when
+      // the user opens onboarding in a vault folder that was never a git
+      // repo before, and ensures Obsidian local state and DavyJones
+      // secrets get gitignored on the very first push.
+      this._connectStatus.textContent = "Setting up git sync...";
+      await this.plugin._lazyInitGitRemote();
 
       this._connectStatus.textContent = "✓ Vault connected! Agents are ready.";
       this._connectStatus.className = "davyjones-onboarding-status davyjones-onboarding-status-ok";
