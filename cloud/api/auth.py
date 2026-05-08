@@ -1,7 +1,9 @@
 """Authentication — OAuth2 (GitHub/Google) + JWT token issuance."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from jose import jwt
@@ -13,6 +15,8 @@ from cloud.config import settings
 from cloud.db import get_db
 from cloud.models.user import User
 from cloud.models.subscription import Subscription
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
