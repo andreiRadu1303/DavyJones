@@ -16,6 +16,7 @@ Not used in K8s mode: the vault PVC is already isolated from user writes
 
 import logging
 import os
+import shutil
 import subprocess
 
 from src.claude_changes import record_changed_files
@@ -42,6 +43,52 @@ def create(vault_path: str, worktrees_root: str, task_id: str) -> str:
         )
     logger.info("Worktree created for task %s at %s", task_id, worktree_path)
     return worktree_path
+
+
+def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
+    """Copy new/modified files from worktree to vault directly.
+
+    Used as a fallback when git apply fails to write anything (e.g. the
+    "No valid patches in input" error caused by binary files like .DS_Store
+    making the whole patch batch unappliable). Skips deletions — we only
+    rescue content the agent created or modified.
+    """
+    result = _git(
+        ["git", "diff", "--cached", "--name-status", "HEAD"],
+        cwd=worktree_path,
+    )
+    if result.returncode != 0:
+        return []
+
+    to_copy = []
+    for line in result.stdout.decode(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        status, path = parts[0], parts[1]
+        if status.startswith("D"):
+            continue  # skip deletions on fallback
+        src = os.path.join(worktree_path, path)
+        if os.path.isfile(src):
+            to_copy.append((path, src))
+
+    if not to_copy:
+        return []
+
+    copied = []
+    for path, src in to_copy:
+        dst = os.path.join(vault_path, path)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        copied.append(path)
+
+    if copied:
+        _git(["git", "add"] + copied, cwd=vault_path)
+
+    return copied
 
 
 def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
@@ -82,14 +129,33 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
 
     had_conflicts = apply.returncode != 0
     if had_conflicts:
+        apply_stderr = apply.stderr.decode().strip()
         logger.warning(
             "Task %s: merge conflicts — conflict markers written to affected files: %s",
             task_id,
-            apply.stderr.decode().strip(),
+            apply_stderr,
         )
-        # Stage the conflicted files so the commit captures the markers.
-        # The user sees both sides of the conflict in Obsidian and can resolve.
+        # Stage any conflict markers git apply wrote.
         _git(["git", "add", "-u"], cwd=vault_path)
+
+        # If git apply wrote nothing at all (e.g. "No valid patches in input"
+        # caused by a binary file like .DS_Store making the batch unparseable),
+        # fall back to copying files directly from the worktree so they aren't
+        # lost when the worktree is removed.
+        nothing_staged = _git(["git", "diff", "--cached", "--quiet"], cwd=vault_path).returncode == 0
+        if nothing_staged:
+            copied = _copy_worktree_files(worktree_path, vault_path)
+            if copied:
+                logger.warning(
+                    "Task %s: git apply wrote nothing — rescued %d file(s) via direct copy: %s",
+                    task_id, len(copied), copied,
+                )
+            else:
+                logger.error(
+                    "Task %s: git apply wrote nothing and fallback copy found no files — "
+                    "agent output may be lost",
+                    task_id,
+                )
 
     env = {
         **os.environ,
