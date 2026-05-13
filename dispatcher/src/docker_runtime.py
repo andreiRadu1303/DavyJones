@@ -80,8 +80,9 @@ class DockerRuntime(ContainerRuntime):
         prompt: str,
         env: dict[str, str],
         timeout: int,
+        vault_override: str | None = None,
     ) -> tuple[int, str, str]:
-        volumes = build_agent_volumes()
+        volumes = build_agent_volumes(vault_override)
         container = None
         try:
             container = self._client.containers.create(
@@ -138,8 +139,9 @@ class DockerRuntime(ContainerRuntime):
         env: dict[str, str],
         timeout: int,
         on_output: Optional[Callable[[str], None]] = None,
+        vault_override: str | None = None,
     ) -> tuple[int, str, str]:
-        volumes = build_agent_volumes()
+        volumes = build_agent_volumes(vault_override)
         container = None
         stdout_buf: list[str] = []
         stderr_buf: list[str] = []

@@ -59,6 +59,7 @@ class K8sJobRuntime(ContainerRuntime):
         prompt: str,
         env: dict[str, str],
         timeout: int,
+        vault_override: str | None = None,
     ) -> tuple[int, str, str]:
         from kubernetes import client
 
@@ -194,6 +195,7 @@ class K8sJobRuntime(ContainerRuntime):
         env: dict[str, str],
         timeout: int,
         on_output: Optional[Callable[[str], None]] = None,
+        vault_override: str | None = None,
     ) -> tuple[int, str, str]:
         # For now, streaming uses the same Job approach but processes logs
         # after completion. Real-time streaming requires log follow.

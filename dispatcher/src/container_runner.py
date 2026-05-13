@@ -61,7 +61,7 @@ def run_raw(
 
     env = build_agent_env(max_turns, output_format="json")
     runtime = get_runtime()
-    return runtime.run(prompt, env, timeout)
+    return runtime.run(prompt, env, timeout, vault_override=None)
 
 
 def run_raw_streaming(
@@ -69,11 +69,14 @@ def run_raw_streaming(
     max_turns: int = 20,
     timeout: int | None = None,
     on_output: Optional[Callable[[str], None]] = None,
+    vault_override: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Like run_raw(), but uses stream-json output format to capture the full
     conversation (thinking, tool calls, results) as an execution log.
 
     Returns (exit_code, result_json, execution_log).
+    vault_override: host path to mount at /vault in the agent container
+    instead of the default VAULT_HOST_PATH (used for worktree isolation).
     """
     if timeout is None:
         timeout = AGENT_TIMEOUT_SECONDS
@@ -84,18 +87,20 @@ def run_raw_streaming(
 
     env = build_agent_env(max_turns, output_format="stream-json")
     runtime = get_runtime()
-    return runtime.run_streaming(prompt, env, timeout, on_output)
+    return runtime.run_streaming(prompt, env, timeout, on_output, vault_override=vault_override)
 
 
 def run_task(
     payload: DispatchPayload,
     timeout_override: int | None = None,
     on_output: Optional[Callable[[str], None]] = None,
+    vault_override: Optional[str] = None,
 ) -> TaskResult:
     """Spawn an ephemeral agent container to process a task.
 
     High-level wrapper that builds the prompt, runs via run_raw_streaming()
     (stream-json mode), and parses the result into a TaskResult.
+    vault_override: host path to mount at /vault instead of VAULT_HOST_PATH.
     """
     vault_rules = load_vault_rules()
     prompt = build_prompt(payload, vault_rules=vault_rules)
@@ -111,6 +116,7 @@ def run_task(
             max_turns=max_turns,
             timeout=timeout,
             on_output=on_output,
+            vault_override=vault_override,
         )
     except RuntimeError as e:
         return TaskResult(status="failed", error=str(e))

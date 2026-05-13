@@ -20,9 +20,13 @@ from src.config import (
     MAX_CONCURRENT_AGENTS,
     OVERSEER_MAX_TURNS,
     OVERSEER_TIMEOUT_SECONDS,
+    RUNTIME_BACKEND,
     VAULT_PATH,
+    VAULT_WORKTREES_CONTAINER_PATH,
+    VAULT_WORKTREES_HOST_PATH,
 )
 from src.container_runner import run_raw, run_raw_streaming, run_task
+from src import worktree as wt
 from src.context_resolver import resolve, resolve_batch
 from src.git_watcher import get_changed_md_files, get_commit_diff_text
 from src.models import DispatchPayload, TaskResult
@@ -233,16 +237,18 @@ def _execute_single_task(
 ) -> TaskResult:
     """Execute a single planned task in an agent container.
 
+    In Docker mode, the agent runs inside an isolated git worktree so its
+    writes never touch the user's working tree. After the container exits,
+    the worktree is merged back into the main vault using git apply --3way,
+    preserving any concurrent user edits through git's content-level merge.
+
     If the agent hits max_turns, automatically retries with a continuation
     prompt and doubled turn budget (up to MAX_RETRIES_ON_MAX_TURNS times).
+    All retry attempts share the same worktree so partial file writes from
+    earlier attempts are visible to the continuation agent.
 
     Status updates and result writing are handled by execute_plan() after
     all tasks for a file complete — this function just runs the agent.
-
-    Args:
-        dependency_outputs: map of dependency task_id → output_text from
-            completed predecessors. Injected into the prompt so the agent
-            can use results from earlier tasks without redoing work.
     """
     logger.info("Executing task %s: %s (max_turns=%d)", task.id, task.description, task.max_turns)
 
@@ -271,56 +277,93 @@ def _execute_single_task(
                 f"{dep_context}"
             )
 
+    # Create an isolated worktree for this task (Docker mode only).
+    # vault_override is the HOST path the Docker daemon mounts into the agent
+    # container at /vault — distinct from the main vault so agent writes are
+    # invisible to the user's working tree until merge_back() below.
+    _worktree_container_path: str | None = None
+    vault_override: str | None = None
+    if RUNTIME_BACKEND != "k8s" and VAULT_WORKTREES_HOST_PATH:
+        try:
+            _worktree_container_path = wt.create(
+                VAULT_PATH, VAULT_WORKTREES_CONTAINER_PATH, task.id
+            )
+            vault_override = os.path.join(VAULT_WORKTREES_HOST_PATH, task.id)
+            logger.info("Task %s: using worktree isolation (%s)", task.id, vault_override)
+        except Exception:
+            logger.exception(
+                "Task %s: worktree creation failed, running in main vault (no isolation)",
+                task.id,
+            )
+
     previous_output = None
+    result: TaskResult | None = None
 
-    for attempt in range(1 + MAX_RETRIES_ON_MAX_TURNS):
-        timeout = max(current_turns * AGENT_TIMEOUT_PER_TURN, 120)
+    try:
+        for attempt in range(1 + MAX_RETRIES_ON_MAX_TURNS):
+            timeout = max(current_turns * AGENT_TIMEOUT_PER_TURN, 120)
 
-        payload = DispatchPayload(
-            task_file_path=task.file_path,
-            prompt=current_prompt,
-            context=context,
-            metadata={
-                "type": "task",
-                "max_iterations": current_turns,
-                "is_subtask": True,
-            },
-        )
+            payload = DispatchPayload(
+                task_file_path=task.file_path,
+                prompt=current_prompt,
+                context=context,
+                metadata={
+                    "type": "task",
+                    "max_iterations": current_turns,
+                    "is_subtask": True,
+                },
+            )
 
-        result = run_task(payload, timeout_override=timeout, on_output=on_output)
+            result = run_task(
+                payload,
+                timeout_override=timeout,
+                on_output=on_output,
+                vault_override=vault_override,
+            )
 
-        if not result.hit_max_turns:
-            # Completed within budget — merge with any previous output
-            if previous_output and result.output_text:
-                result.output_text = previous_output + "\n" + result.output_text
-            elif previous_output:
-                result.output_text = previous_output
-            logger.info("Task %s finished: %s", task.id, result.status)
-            return result
+            if not result.hit_max_turns:
+                if previous_output and result.output_text:
+                    result.output_text = previous_output + "\n" + result.output_text
+                elif previous_output:
+                    result.output_text = previous_output
+                logger.info("Task %s finished: %s", task.id, result.status)
+                return result
 
-        # Hit max_turns — retry with continuation
-        logger.warning(
-            "Task %s hit max_turns (%d) on attempt %d, retrying with %d turns",
-            task.id, current_turns, attempt + 1, current_turns * 2,
-        )
-        previous_output = result.output_text or ""
-        current_turns *= 2
-        current_prompt = (
-            f"You are continuing a task that ran out of turns.\n\n"
-            f"## Original Task\n{task.prompt}\n\n"
-            f"## What was accomplished so far\n{previous_output}\n\n"
-            f"## Instructions\n"
-            f"Pick up where the previous agent left off. Do NOT redo work that is "
-            f"already done. Complete the remaining work."
-        )
+            # Hit max_turns — retry with continuation in the same worktree
+            logger.warning(
+                "Task %s hit max_turns (%d) on attempt %d, retrying with %d turns",
+                task.id, current_turns, attempt + 1, current_turns * 2,
+            )
+            previous_output = result.output_text or ""
+            current_turns *= 2
+            current_prompt = (
+                f"You are continuing a task that ran out of turns.\n\n"
+                f"## Original Task\n{task.prompt}\n\n"
+                f"## What was accomplished so far\n{previous_output}\n\n"
+                f"## Instructions\n"
+                f"Pick up where the previous agent left off. Do NOT redo work that is "
+                f"already done. Complete the remaining work."
+            )
 
-    # Exhausted retries — return whatever we have
-    logger.warning("Task %s exhausted retries, returning partial result", task.id)
-    if previous_output and result.output_text:
-        result.output_text = previous_output + "\n" + result.output_text
-    elif previous_output:
-        result.output_text = previous_output
-    return result
+        # Exhausted retries — return whatever we have
+        logger.warning("Task %s exhausted retries, returning partial result", task.id)
+        if result is None:
+            result = TaskResult(status="failed", error="No result produced")
+        if previous_output and result.output_text:
+            result.output_text = previous_output + "\n" + result.output_text
+        elif previous_output:
+            result.output_text = previous_output
+        return result
+
+    finally:
+        if _worktree_container_path:
+            try:
+                wt.merge_back(VAULT_PATH, _worktree_container_path, task.id)
+            except Exception:
+                logger.exception(
+                    "Task %s: worktree merge_back failed — agent output may be lost",
+                    task.id,
+                )
 
 
 def _collect_dependency_outputs(

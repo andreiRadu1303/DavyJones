@@ -98,10 +98,11 @@ def build_agent_env(max_turns: int, output_format: str = "json") -> dict[str, st
     return env
 
 
-def build_agent_volumes() -> dict[str, dict]:
+def build_agent_volumes(vault_host_path_override: str | None = None) -> dict[str, dict]:
     """Build the volume mounts dict for agent containers (Docker format)."""
+    vault_src = vault_host_path_override or VAULT_HOST_PATH
     volumes = {
-        VAULT_HOST_PATH: {"bind": "/vault", "mode": "rw"},
+        vault_src: {"bind": "/vault", "mode": "rw"},
     }
     if CREDS_HOST_PATH:
         volumes[CREDS_HOST_PATH] = {"bind": "/tmp/claude-credentials.json", "mode": "ro"}
@@ -122,10 +123,12 @@ class ContainerRuntime(ABC):
         prompt: str,
         env: dict[str, str],
         timeout: int,
+        vault_override: Optional[str] = None,
     ) -> tuple[int, str, str]:
         """Run agent container and return (exit_code, stdout, stderr).
 
         Used for simple JSON output mode.
+        vault_override: host path to mount at /vault instead of VAULT_HOST_PATH.
         """
         ...
 
@@ -136,11 +139,13 @@ class ContainerRuntime(ABC):
         env: dict[str, str],
         timeout: int,
         on_output: Optional[Callable[[str], None]] = None,
+        vault_override: Optional[str] = None,
     ) -> tuple[int, str, str]:
         """Run agent container with stream-json output.
 
         Returns (exit_code, result_json, execution_log).
         on_output receives formatted log chunks in real-time.
+        vault_override: host path to mount at /vault instead of VAULT_HOST_PATH.
         """
         ...
 
