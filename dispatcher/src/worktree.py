@@ -45,34 +45,57 @@ def create(vault_path: str, worktrees_root: str, task_id: str) -> str:
     return worktree_path
 
 
+# Binary macOS/Windows filesystem metadata files that should never be tracked
+# in a vault and whose binary delta patches break git apply --3way.
+_BINARY_METADATA = frozenset([".DS_Store", "Thumbs.db", "desktop.ini"])
+
+
 def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
     """Copy new/modified files from worktree to vault directly.
 
-    Used as a fallback when git apply fails to write anything (e.g. the
-    "No valid patches in input" error caused by binary files like .DS_Store
-    making the whole patch batch unappliable). Skips deletions — we only
-    rescue content the agent created or modified.
+    Used as a fallback when git apply fails to write anything. Skips
+    deletions and binary metadata files — we only rescue content the
+    agent created or modified.
     """
     result = _git(
-        ["git", "diff", "--cached", "--name-status", "HEAD"],
+        ["git", "diff", "--cached", "-z", "--name-status", "HEAD"],
         cwd=worktree_path,
     )
+    logger.debug(
+        "Task fallback: git diff --cached -z --name-status HEAD rc=%d output=%r",
+        result.returncode, result.stdout[:500],
+    )
     if result.returncode != 0:
+        logger.error(
+            "Task fallback: git diff --name-status failed (rc=%d stderr=%r)",
+            result.returncode, result.stderr.decode(errors="replace")[:200],
+        )
         return []
 
+    # Output with -z: NUL-delimited pairs of <status NUL path NUL> (renames have two paths)
+    entries = result.stdout.decode(errors="replace").split("\0")
     to_copy = []
-    for line in result.stdout.decode(errors="replace").splitlines():
-        line = line.strip()
-        if not line:
+    i = 0
+    while i < len(entries):
+        status = entries[i].strip()
+        if not status:
+            i += 1
             continue
-        parts = line.split("\t", 1)
-        if len(parts) != 2:
+        if status.startswith("R") or status.startswith("C"):
+            # Rename/copy: next two entries are old path and new path
+            path = entries[i + 2] if i + 2 < len(entries) else ""
+            i += 3
+        else:
+            path = entries[i + 1] if i + 1 < len(entries) else ""
+            i += 2
+        if not path or status.startswith("D"):
             continue
-        status, path = parts[0], parts[1]
-        if status.startswith("D"):
-            continue  # skip deletions on fallback
+        if os.path.basename(path) in _BINARY_METADATA:
+            continue
         src = os.path.join(worktree_path, path)
-        if os.path.isfile(src):
+        exists = os.path.isfile(src)
+        logger.debug("Task fallback: status=%s path=%r src_exists=%s", status, path, exists)
+        if exists:
             to_copy.append((path, src))
 
     if not to_copy:
@@ -102,8 +125,13 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
 
     Returns True on a clean merge, False if conflict markers were written.
     """
-    # Stage everything the agent wrote
+    # Stage everything the agent wrote, then immediately unstage binary
+    # filesystem metadata files whose delta patches break git apply --3way.
     _git(["git", "add", "-A"], cwd=worktree_path)
+    _git(
+        ["git", "rm", "--cached", "--ignore-unmatch"] + list(_BINARY_METADATA),
+        cwd=worktree_path,
+    )
 
     # Nothing to merge?
     if _git(["git", "diff", "--cached", "--quiet"], cwd=worktree_path).returncode == 0:
