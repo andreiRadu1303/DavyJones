@@ -11,7 +11,10 @@ def build_prompt(payload: DispatchPayload, vault_rules: dict | None = None) -> s
     """Build the full prompt for Claude CLI from context + task prompt."""
     parts = [
         "You are working inside an Obsidian vault at /vault.",
-        "You have tools to read, write, and list files in this vault.",
+        "All vault files are directly accessible under /vault — read, write, and list them",
+        "using your built-in filesystem tools. The obsidian MCP tool only indexes .md files;",
+        "for PDFs, images, and other non-markdown files, always read them directly via their",
+        "/vault/<relative-path> filesystem path instead of calling the obsidian MCP tool.",
     ]
 
     if payload.context:
