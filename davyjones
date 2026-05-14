@@ -224,11 +224,20 @@ _start_vault() {
     local profiles
     profiles="$(_detect_profiles "$vault_abs")"
 
+    # Compute the last git commit hash that touched dispatcher/src/ so that
+    # Docker cache is busted whenever source code changes, even when file
+    # mtimes are not reliably propagated (common with Docker volume mounts).
+    local src_hash
+    src_hash=$(git -C "$PROJECT_ROOT" log -1 --format="%H" -- dispatcher/src/ 2>/dev/null || echo "unknown")
+
     cd "$PROJECT_ROOT"
+    docker compose --project-name "$project" --env-file "$env_file" $profiles \
+        build --build-arg "SRC_HASH=$src_hash" dispatcher
+
     if [ "$foreground" = "true" ]; then
-        docker compose --project-name "$project" --env-file "$env_file" $profiles up --build
+        docker compose --project-name "$project" --env-file "$env_file" $profiles up
     else
-        docker compose --project-name "$project" --env-file "$env_file" $profiles up --build -d
+        docker compose --project-name "$project" --env-file "$env_file" $profiles up -d
     fi
 
     rm -f "$env_file"

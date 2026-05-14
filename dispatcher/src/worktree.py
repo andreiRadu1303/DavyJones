@@ -143,16 +143,27 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
     # The diff includes pre-image blob SHAs which --3way needs for the
     # merge base lookup — those objects exist in the main vault's object
     # store because the worktree shares it.
-    diff = _git(
+    diff_result = _git(
         ["git", "diff", "--cached", "--binary", "HEAD"],
         cwd=worktree_path,
-    ).stdout
+    )
+    diff = diff_result.stdout
+    logger.info(
+        "Task %s: diff rc=%d bytes=%d stderr=%r",
+        task_id, diff_result.returncode, len(diff),
+        diff_result.stderr.decode(errors="replace")[:200],
+    )
 
     # Apply to the main vault with 3-way merge fallback.
     apply = _git(
         ["git", "apply", "--3way", "--index", "--binary", "-"],
         cwd=vault_path,
         input=diff,
+    )
+    logger.info(
+        "Task %s: git apply rc=%d stderr=%r",
+        task_id, apply.returncode,
+        apply.stderr.decode(errors="replace")[:400],
     )
 
     had_conflicts = apply.returncode != 0
@@ -164,13 +175,17 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
             apply_stderr,
         )
         # Stage any conflict markers git apply wrote.
-        _git(["git", "add", "-u"], cwd=vault_path)
+        add_u = _git(["git", "add", "-u"], cwd=vault_path)
+        logger.info("Task %s: git add -u rc=%d stderr=%r", task_id, add_u.returncode,
+                    add_u.stderr.decode(errors="replace")[:200])
 
         # If git apply wrote nothing at all (e.g. "No valid patches in input"
         # caused by a binary file like .DS_Store making the batch unparseable),
         # fall back to copying files directly from the worktree so they aren't
         # lost when the worktree is removed.
-        nothing_staged = _git(["git", "diff", "--cached", "--quiet"], cwd=vault_path).returncode == 0
+        diff_after = _git(["git", "diff", "--cached", "--quiet"], cwd=vault_path)
+        logger.info("Task %s: vault staged after add -u: rc=%d", task_id, diff_after.returncode)
+        nothing_staged = diff_after.returncode == 0
         if nothing_staged:
             copied = _copy_worktree_files(worktree_path, vault_path)
             if copied:
