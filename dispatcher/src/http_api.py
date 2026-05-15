@@ -30,6 +30,7 @@ from src.overseer import execute_plan, extract_plan
 from src.overseer_prompt import build_direct_task
 from src.plan_models import OverseerPlan, topological_levels, validate_plan
 from src.scribe import ScribeJob, enqueue as scribe_enqueue, get_report, list_reports
+from src.task_logger import append_task_log
 from src.vault_rules import load_vault_rules
 
 logger = logging.getLogger(__name__)
@@ -295,6 +296,17 @@ def _execute_direct_task(
         task.phase = "done"
         task.finished_at = datetime.now(timezone.utc).isoformat()
         task.error = str(e)
+    finally:
+        append_task_log(
+            created_at=task.created_at,
+            description=description,
+            scope_files=scope_files,
+            status=task.status,
+            succeeded=task.succeeded,
+            task_count=task.task_count,
+            error=task.error,
+            source=task.source,
+        )
 
 
 # ─── Flask app ──────────────────────────────────────────────────
