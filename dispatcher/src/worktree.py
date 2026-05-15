@@ -28,6 +28,42 @@ def _git(args: list[str], *, cwd: str, input: bytes | None = None) -> subprocess
     return subprocess.run(args, cwd=cwd, input=input, capture_output=True)
 
 
+def _git_wt(
+    args: list[str],
+    *,
+    gitdir: str,
+    worktree_path: str,
+    input: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    """Run a git command with an explicit --git-dir and --work-tree.
+
+    The agent container mounts the worktree at /vault. After it exits,
+    git's auto-discovery of the gitdir (via the .git file) becomes
+    unreliable — the path stored in the .git file uses the dispatcher's
+    /vault prefix which may no longer match after the agent modifies the
+    container's git environment. Passing --git-dir and --work-tree
+    explicitly bypasses auto-discovery entirely.
+    """
+    return subprocess.run(
+        ["git", "--git-dir", gitdir, "--work-tree", worktree_path] + args,
+        cwd=worktree_path,
+        input=input,
+        capture_output=True,
+    )
+
+
+def _read_gitdir(worktree_path: str) -> str | None:
+    """Read the gitdir path from the worktree's .git file."""
+    dot_git = os.path.join(worktree_path, ".git")
+    if not os.path.isfile(dot_git):
+        return None
+    with open(dot_git, errors="replace") as f:
+        line = f.read().strip()
+    if line.startswith("gitdir: "):
+        return line[len("gitdir: "):]
+    return None
+
+
 def create(vault_path: str, worktrees_root: str, task_id: str) -> str:
     """Create a detached worktree for a task. Returns the worktree path."""
     os.makedirs(worktrees_root, exist_ok=True)
@@ -50,20 +86,17 @@ def create(vault_path: str, worktrees_root: str, task_id: str) -> str:
 _BINARY_METADATA = frozenset([".DS_Store", "Thumbs.db", "desktop.ini"])
 
 
-def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
+def _copy_worktree_files(worktree_path: str, vault_path: str, gitdir: str) -> list[str]:
     """Copy new/modified files from worktree to vault directly.
 
     Used as a fallback when git apply fails to write anything. Skips
     deletions and binary metadata files — we only rescue content the
     agent created or modified.
     """
-    result = _git(
-        ["git", "diff", "--cached", "-z", "--name-status", "HEAD"],
-        cwd=worktree_path,
-    )
-    logger.debug(
-        "Task fallback: git diff --cached -z --name-status HEAD rc=%d output=%r",
-        result.returncode, result.stdout[:500],
+    result = _git_wt(
+        ["diff", "--cached", "-z", "--name-status", "HEAD"],
+        gitdir=gitdir,
+        worktree_path=worktree_path,
     )
     if result.returncode != 0:
         logger.error(
@@ -72,7 +105,7 @@ def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
         )
         return []
 
-    # Output with -z: NUL-delimited pairs of <status NUL path NUL> (renames have two paths)
+    # Output with -z: NUL-delimited <status NUL path NUL> pairs
     entries = result.stdout.decode(errors="replace").split("\0")
     to_copy = []
     i = 0
@@ -82,7 +115,6 @@ def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
             i += 1
             continue
         if status.startswith("R") or status.startswith("C"):
-            # Rename/copy: next two entries are old path and new path
             path = entries[i + 2] if i + 2 < len(entries) else ""
             i += 3
         else:
@@ -93,9 +125,7 @@ def _copy_worktree_files(worktree_path: str, vault_path: str) -> list[str]:
         if os.path.basename(path) in _BINARY_METADATA:
             continue
         src = os.path.join(worktree_path, path)
-        exists = os.path.isfile(src)
-        logger.debug("Task fallback: status=%s path=%r src_exists=%s", status, path, exists)
-        if exists:
+        if os.path.isfile(src):
             to_copy.append((path, src))
 
     if not to_copy:
@@ -125,27 +155,54 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
 
     Returns True on a clean merge, False if conflict markers were written.
     """
+    # Read gitdir explicitly from the .git file and use it for all
+    # worktree git commands. Auto-discovery fails after the agent
+    # container runs because the path stored in .git uses the
+    # dispatcher's /vault prefix, which git cannot resolve when the
+    # worktree index or config is in an unexpected state.
+    dot_git = os.path.join(worktree_path, ".git")
+    if os.path.isfile(dot_git):
+        gitdir = _read_gitdir(worktree_path)
+        logger.info("Task %s: worktree gitdir=%r", task_id, gitdir)
+    elif os.path.isdir(dot_git):
+        gitdir = dot_git
+        logger.error("Task %s: worktree .git is a DIRECTORY — agent replaced it", task_id)
+    else:
+        gitdir = None
+        logger.error("Task %s: worktree .git is MISSING", task_id)
+
+    if not gitdir:
+        logger.error("Task %s: cannot determine gitdir — skipping merge", task_id)
+        _remove(vault_path, worktree_path)
+        return False
+
+    # Verify the gitdir path actually exists (guards against stale .git files)
+    if not os.path.isdir(gitdir):
+        logger.error(
+            "Task %s: gitdir %r does not exist — worktree metadata was cleaned up prematurely",
+            task_id, gitdir,
+        )
+        _remove(vault_path, worktree_path)
+        return False
+
     # Stage everything the agent wrote, then immediately unstage binary
     # filesystem metadata files whose delta patches break git apply --3way.
-    _git(["git", "add", "-A"], cwd=worktree_path)
-    _git(
-        ["git", "rm", "--cached", "--ignore-unmatch"] + list(_BINARY_METADATA),
-        cwd=worktree_path,
+    _git_wt(["add", "-A"], gitdir=gitdir, worktree_path=worktree_path)
+    _git_wt(
+        ["rm", "--cached", "--ignore-unmatch"] + list(_BINARY_METADATA),
+        gitdir=gitdir, worktree_path=worktree_path,
     )
 
     # Nothing to merge?
-    if _git(["git", "diff", "--cached", "--quiet"], cwd=worktree_path).returncode == 0:
+    if _git_wt(["diff", "--cached", "--quiet"], gitdir=gitdir, worktree_path=worktree_path).returncode == 0:
         logger.info("Task %s: agent made no file changes", task_id)
         _remove(vault_path, worktree_path)
         return True
 
     # Get the full diff of agent changes relative to the shared HEAD.
-    # The diff includes pre-image blob SHAs which --3way needs for the
-    # merge base lookup — those objects exist in the main vault's object
-    # store because the worktree shares it.
-    diff_result = _git(
-        ["git", "diff", "--cached", "--binary", "HEAD"],
-        cwd=worktree_path,
+    diff_result = _git_wt(
+        ["diff", "--cached", "--binary", "HEAD"],
+        gitdir=gitdir, worktree_path=worktree_path,
     )
     diff = diff_result.stdout
     logger.info(
@@ -171,23 +228,13 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
         apply_stderr = apply.stderr.decode().strip()
         logger.warning(
             "Task %s: merge conflicts — conflict markers written to affected files: %s",
-            task_id,
-            apply_stderr,
+            task_id, apply_stderr,
         )
-        # Stage any conflict markers git apply wrote.
-        add_u = _git(["git", "add", "-u"], cwd=vault_path)
-        logger.info("Task %s: git add -u rc=%d stderr=%r", task_id, add_u.returncode,
-                    add_u.stderr.decode(errors="replace")[:200])
+        _git(["git", "add", "-u"], cwd=vault_path)
 
-        # If git apply wrote nothing at all (e.g. "No valid patches in input"
-        # caused by a binary file like .DS_Store making the batch unparseable),
-        # fall back to copying files directly from the worktree so they aren't
-        # lost when the worktree is removed.
-        diff_after = _git(["git", "diff", "--cached", "--quiet"], cwd=vault_path)
-        logger.info("Task %s: vault staged after add -u: rc=%d", task_id, diff_after.returncode)
-        nothing_staged = diff_after.returncode == 0
+        nothing_staged = _git(["git", "diff", "--cached", "--quiet"], cwd=vault_path).returncode == 0
         if nothing_staged:
-            copied = _copy_worktree_files(worktree_path, vault_path)
+            copied = _copy_worktree_files(worktree_path, vault_path, gitdir)
             if copied:
                 logger.warning(
                     "Task %s: git apply wrote nothing — rescued %d file(s) via direct copy: %s",
@@ -215,7 +262,6 @@ def merge_back(vault_path: str, worktree_path: str, task_id: str) -> bool:
         capture_output=True,
     )
 
-    # Record which files this commit touched (used by cloud-mode plugin pull)
     try:
         name_result = subprocess.run(
             ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
