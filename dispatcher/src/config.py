@@ -52,3 +52,10 @@ K8S_AGENT_IMAGE = os.environ.get("K8S_AGENT_IMAGE", "davyjones-agent:latest")
 
 # Claude API endpoint override (ANTHROPIC_BASE_URL)
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
+
+# Worktree isolation (Docker mode only)
+# VAULT_WORKTREES_HOST_PATH: host-side directory where per-task worktrees live;
+#   mounted into the dispatcher container at VAULT_WORKTREES_CONTAINER_PATH.
+# Empty string disables the feature (K8s mode, or opted-out Docker setups).
+VAULT_WORKTREES_HOST_PATH = os.environ.get("VAULT_WORKTREES_HOST_PATH", "")
+VAULT_WORKTREES_CONTAINER_PATH = os.environ.get("VAULT_WORKTREES_CONTAINER_PATH", "/worktrees")

@@ -5,12 +5,15 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ${VAULT_DIR:?Set VAULT_DIR in .env}:/vault
+      - ${VAULT_WORKTREES_DIR:-/tmp/davyjones-worktrees}:/worktrees
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.claude-credentials.json:/tmp/claude-credentials.json:rw
       - ${STATE_DIR:-./.state/default}:/app/state
     environment:
       - VAULT_PATH=/vault
       - VAULT_HOST_PATH=${VAULT_DIR}
+      - VAULT_WORKTREES_HOST_PATH=${VAULT_WORKTREES_DIR:-/tmp/davyjones-worktrees}
+      - VAULT_WORKTREES_CONTAINER_PATH=/worktrees
       - CREDS_HOST_PATH=${PWD}/.claude-credentials.json
       - DOCKER_NETWORK=davyjones
       - AGENT_IMAGE=davyjones-agent

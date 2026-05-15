@@ -189,8 +189,10 @@ def _trigger_instructions() -> list[str]:
         "5. **No-op is valid**: If triggered files don't need updating, don't create tasks for them.",
         "   Only act when there's a clear structural relationship that requires synchronization.",
         "",
-        "When creating task prompts, instruct agents to read relevant files via `obsidian_read_notes`",
-        "to understand existing patterns before making changes.",
+        "When creating task prompts, instruct agents to read relevant files to understand existing",
+        "patterns before making changes. For .md files they can use `obsidian_read_notes`; for PDFs,",
+        "images, and other non-markdown files they must read directly from /vault/<relative-path>",
+        "using their built-in filesystem tools — the obsidian MCP tool does not index these files.",
         "",
     ]
 
