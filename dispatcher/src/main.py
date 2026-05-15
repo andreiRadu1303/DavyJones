@@ -215,6 +215,20 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
     )
     _store_task(task)
 
+    from src.task_logger import append_task_log as _append_task_log
+
+    def _log_commit_task():
+        _append_task_log(
+            created_at=task.created_at,
+            description=desc,
+            scope_files=commit_data.changed_files,
+            status=task.status,
+            succeeded=task.succeeded,
+            task_count=task.task_count,
+            error=task.error,
+            source="commit",
+        )
+
     task.status = "running"
     task.started_at = datetime.now(timezone.utc).isoformat()
 
@@ -231,6 +245,7 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
         task.finished_at = datetime.now(timezone.utc).isoformat()
         task.error = "Overseer failed — fell back to per-file dispatch"
         _fallback_dispatch(commit_data.changed_files)
+        _log_commit_task()
         return
 
     if not plan.tasks:
@@ -238,6 +253,7 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
         task.status = "completed"
         task.phase = "done"
         task.finished_at = datetime.now(timezone.utc).isoformat()
+        _log_commit_task()
         return
 
     # ── Phase: executing ─────────────────────────────────────
@@ -322,6 +338,7 @@ def _handle_commit_range(repo, from_sha: str, to_sha: str) -> None:
         logger.exception("Failed to enqueue Scribe job")
 
     task.phase = "done"
+    _log_commit_task()
 
 
 def main() -> None:
