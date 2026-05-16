@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 
-from src.config import POLL_INTERVAL_SECONDS, VAULT_PATH
+from src.config import POLL_INTERVAL_SECONDS, RUNTIME_BACKEND, VAULT_PATH
 from src.container_runner import run_task
 from src.context_resolver import resolve
 from src.frontmatter_parser import check_dependencies_met, is_actionable, parse_note
@@ -73,13 +73,16 @@ def _auto_commit(file_path: str, status: str) -> None:
                     logger.info("Claude changed files: %s", changed)
             except Exception:
                 logger.exception("Failed to get changed files from commit")
-            # Push to remote if configured (cloud mode sync)
-            try:
-                repo = get_repo()
-                if repo.remotes:
-                    push_remote(repo)
-            except Exception:
-                logger.debug("Push after auto-commit skipped (no remote or error)")
+            # Push to remote if configured (cloud mode sync).
+            # In local docker mode the plugin commits directly to the
+            # bind-mounted vault, so the dispatcher has no remote to push to.
+            if RUNTIME_BACKEND == "k8s":
+                try:
+                    repo = get_repo()
+                    if repo.remotes:
+                        push_remote(repo)
+                except Exception:
+                    logger.debug("Push after auto-commit skipped (no remote or error)")
         else:
             stderr = result.stderr.decode().strip()
             if "nothing to commit" in stderr:
@@ -438,8 +441,11 @@ def main() -> None:
             creds_local = "/tmp/claude-credentials.json"
             ensure_valid_token(creds_local)
 
-            # Pull remote changes (if a remote is configured)
-            pull_remote(repo)
+            # Pull remote changes only in cloud mode. Locally the plugin
+            # writes commits directly to the bind-mounted vault, so there
+            # is no remote to pull from.
+            if RUNTIME_BACKEND == "k8s":
+                pull_remote(repo)
 
             last_sha = load_last_sha()
             ranges = get_new_commit_ranges(repo, last_sha)
